@@ -58,8 +58,10 @@ class grid_set:
                     self.get_ptp()
                     break
         
-    def set_grid_lon_lat(self,lons,lats,grid_list = False):
+    def set_grid_lon_lat(self,lons,lats,grid_list = False,fill_lonlat = False):
        # creates a grid depending on wanted resolution 
+        if fill_lonlat:
+            lons,lats = np.meshgrid(lons,lats)
         if self.proj:
             xpts, ypts = self.mplot(lons,lats)
             self.lons = lons
@@ -502,7 +504,181 @@ class grid_set:
             out_mask = np.ones_like(self.mask,dtype=bool)
             out_mask[np.isnan(new_mask)] = False
             return out_mask
+
+    def GS2track(self,arr,lon,lat,method='linear',save_array = False):
+        """
+        Give this function an array and lon/lat of a 1d track
+        You'll get the array regridded onto the track
+        Saves the regridding methods for efficiency
+        method = 'linear','nearest','cubic' is the scipy interpolator used
+        """
+        from scipy.spatial import Delaunay
+        from scipy.interpolate import LinearNDInterpolator
+        from scipy.interpolate import NearestNDInterpolator
+        from scipy.interpolate import CloughTocher2DInterpolator
+        # get the tri angulation
+        ### check if the regridding terms exist
+        ### make
+        if not hasattr(self, 'tri'):
+            xyorig = np.vstack((self.xpts.ravel(),self.ypts.ravel())).T
+            self.tri = Delaunay(xyorig)  # Compute the triangulation
+        mesh_new = self.mplot(lon,lat)
+        try: 
+            arrout = arr(mesh_new)
+            return arrout
+        except TypeError:
+            if method == 'linear':
+                interpolator = LinearNDInterpolator(self.tri, arr.ravel())
+            elif method == 'nearest':
+                interpolator = NearestNDInterpolator(self.tri, arr.ravel())
+            elif method == 'cubic':
+                interpolator = CloughTocher2DInterpolator(self.tri, arr.ravel())
+            arrout =  interpolator(mesh_new)
+            if save_array:
+                return arrout, interpolator
+            else:
+                return arrout
+    
+    def GS2track_vecs(self,x,y,lon,lat,method='linear',save_array = False):
+        """
+        Give this function an array and lon/lat of a 1d track
+        You'll get the array regridded onto the track
+        Saves the regridding methods for efficiency
+        method = 'linear','nearest','cubic' is the scipy interpolator used
+        """
+        from scipy.spatial import Delaunay
+        from scipy.interpolate import LinearNDInterpolator
+        from scipy.interpolate import NearestNDInterpolator
+        from scipy.interpolate import CloughTocher2DInterpolator
+        # get the tri angulation
+        ### check if the regridding terms exist
+        ### make
+        if not hasattr(self, 'tri'):
+            xyorig = np.vstack((self.xpts.ravel(),self.ypts.ravel())).T
+            self.tri = Delaunay(xyorig)  # Compute the triangulation
+        mesh_new = self.mplot(lon,lat)
+        try: 
+            xout = x(mesh_new)
+            yout = y(mesh_new)
+            return xout,yout
+        except TypeError:
+            xr = -y*self.in_ang_c - x*self.in_ang_s
+            yr =  x*self.in_ang_c - y*self.in_ang_s
+            if method == 'linear':
+                interpolatorX = LinearNDInterpolator(self.tri, xr.ravel())
+                interpolatorY = LinearNDInterpolator(self.tri, yr.ravel())
+            elif method == 'nearest':
+                interpolatorX = NearestNDInterpolator(self.tri, xr.ravel())
+                interpolatorY = NearestNDInterpolator(self.tri, yr.ravel())
+            elif method == 'cubic':
+                interpolatorX = CloughTocher2DInterpolator(self.tri, xr.ravel())
+                interpolatorY = CloughTocher2DInterpolator(self.tri, yr.ravel())
+            xout =  interpolatorX(mesh_new)
+            yout =  interpolatorY(mesh_new)
+            if save_array:
+                return xout,yout, interpolatorX,interpolatorY
+            else:
+                return xout,yout
+
+    def bin_list(self,data_list,lons,lats,bin_func = 'mean',
+                 ret_count = False,xy_order = 0,append = False,verbos=False):
+        from scipy import stats
+        """
+        uses the grid_set to bin data points
+        will only work well with grids and projections that are 'squarish'
+        If the grid is too distorted then this won't be accurate
+        If the gird is say diagonally orientated to the projection 
+            again this won't work
+        Uses the scipy.stats.binned_statistics
+        data_list =  list of data points (list np.array data_frame column)
+        lon/lat =  the same as data_list but lon/lat
+        bin_func, the statistic we want, as with binned_statistics
+            this can be a function
+        xy_order is for intialising the grid_bin
+            default = 0, expecting xpts to increase in the x direction
+            set to  = 1, for xpts increasing in the y direction (odd grid)
+        """
+        stat_append = False
+        if append is not False: stat_append = True
+            
+        if not hasattr(self, 'edges_x'):
+            dims = np.shape(self.xpts)
+            self.xy_order = xy_order
+            if   xy_order == 0:
+                self.edges_x = np.zeros(dims[0]+1)
+                self.edges_y = np.zeros(dims[1]+1)
+                self.edges_x[0:-1] = self.xpts[0,:] 
+                self.edges_y[0:-1] = self.ypts[:,0]
+            elif xy_order == 1:
+                self.edges_x = np.zeros(dims[1]+1)
+                self.edges_y = np.zeros(dims[0]+1)
+                self.edges_x[0:-1] = self.xpts[:,0] 
+                self.edges_y[0:-1] = self.ypts[0,:]
+            xshift = np.mean(np.diff(self.edges_x))
+            yshift = np.mean(np.diff(self.edges_y))
+            self.edges_x[-1] = 2*self.edges_x[-2] - self.edges_y[-3]
+            self.edges_y[-1] = 2*self.edges_y[-2] - self.edges_y[-3]
+            self.edges_x = self.edges_x - xshift
+            self.edges_y = self.edges_y - yshift
+            #### we can't have dcreasing bins so let's shift them
+            self.descx = False
+            self.descy = False
+            if np.sum(np.diff(self.edges_x))<0.0: 
+                self.edges_x = np.flip(self.edges_x)
+                self.descx = True
+            if np.sum(np.diff(self.edges_y))<0.0: 
+                self.edges_y = np.flip(self.edges_y)
+                self.descy = True
         
+        x,y = self.mplot(lons,lats)
+        msk = np.isfinite(data_list) & np.isfinite(lons) & np.isfinite(lats)
+        
+#         return [self.edges_x-xshift,self.edges_y-yshift]
+        ret = stats.binned_statistic_2d(x[msk],y[msk],
+                            data_list[msk],statistic=bin_func, 
+                            bins=[slf.edges_x,self.edges_y])
+        #### now return array
+        outarr = ret.statistic.T
+        ### flip outputs if needed
+        if ((self.xy_order == 0 and self.descx) 
+            or (self.xy_order == 1 and self.descy)):
+            outarr = np.fliplr(outarr)
+            if verbos: print('flipping lr')
+        if ((self.xy_order == 0 and self.descy) 
+            or (self.xy_order == 1 and self.descx)):
+            outarr = np.flipud(outarr)
+            if verbos: print('flipping ud')
+        ### count for accumulation
+        if ret_count or stat_append:
+            ret = stats.binned_statistic_2d(x[msk],y[msk],
+                            data_list[msk],statistic='count', 
+                            bins=[self.edges_x,self.edges_y])
+            outcount = ret.statistic.T
+            if ((self.xy_order == 0 and self.descx) 
+                or (self.xy_order == 1 and self.descy)):
+                outcount = np.fliplr(outcount)
+            if ((self.xy_order == 0 and self.descy) 
+                or (self.xy_order == 1 and self.descx)):
+                outcount = np.flipud(outcount)
+            ### again flip if needed
+        #### or accumulate the count
+        if stat_append:
+            ### weighted av
+            count_weight = append[1] + outcount
+            w_old = append[0]*append[1]/count_weight
+            w_new = outarr*outcount/count_weight
+            w_old[np.isnan(w_old)] = 0.0
+            w_new[np.isnan(w_new)] = 0.0
+            newarr = w_old + w_new
+            newarr[count_weight<1] = np.nan
+            outarr = newarr
+            outcount = count_weight
+        if ret_count:
+            return outarr,outcount
+        else:
+            return outarr
+
+
 def read_nc_single(ncfile,grid_set,lonlatk,valk,fill_lonlat = False):
     """
     # read and grids, then regrids a single data slice netcdf
@@ -553,13 +729,13 @@ def geo_gradient(array,grid_set):
         # taking the gradient eachmtime
         # 1 . columns
         for i in range(grid_set.m):
-            temp_space = [np.sum(grid_set.ydist[0:j+1,i])
+            temp_space = [np.sum(grid_set.ydist[i,0:j+1])
                           for j in range(grid_set.n)]
             out_Day[i,:] = np.gradient(
             array[i,:],temp_space)
         # 2 . rows
         for j in range(grid_set.n):
-            temp_space = [np.sum(grid_set.xdist[j,0:i+1])
+            temp_space = [np.sum(grid_set.xdist[0:i+1,j])
                           for i in range(grid_set.m)]
             out_Dax[:,j] = np.gradient(
             array[:,j],temp_space)
@@ -732,7 +908,7 @@ def regrid_data(data,dates,lons,lats,grid_set,periods,
     x_d, y_d = grid_set.mplot(lon_a, lat_a)
     for tt in range(n_t):
         new_d_array[tt,:,:] = griddata((x_d.ravel(), y_d.ravel()),
-                data[tt][:].ravel(), (grid_set.xpts.T, grid_set.ypts.T),
+                data[tt][:].ravel(), (grid_set.xpts, grid_set.ypts),
                 method='linear')
     return dy.data_year(new_d_array,dates,periods)
 
@@ -1065,25 +1241,34 @@ class Gs2Gs:
             self.new_lons = gs_new.lons
             self.new_lats = gs_new.lats
 
-    def rg_array(self,arr):
+    def rg_array(self,arr,method='linear'):
         """
         the regridding function
         feed it the array defined on gs_native
         out pops a new array on gs_new
         """
         from scipy.interpolate import LinearNDInterpolator
+        from scipy.interpolate import NearestNDInterpolator
+        from scipy.interpolate import CloughTocher2DInterpolator
         # define the function
-        interpolator = LinearNDInterpolator(self.tri, arr.ravel())
+        if method == 'linear':
+            interpolator = LinearNDInterpolator(self.tri, arr.ravel())
+        elif method == 'nearest':
+            interpolator = NearestNDInterpolator(self.tri, arr.ravel())
+        elif method == 'cubic':
+            interpolator = CloughTocher2DInterpolator(self.tri, arr.ravel())
         return interpolator(self.mesh_new)
 
 
-    def rg_vecs_to_plot(self,x,y):
+    def rg_vecs_to_plot(self,x,y,method='linear'):
         """
         the regridding function, this just allows plotting in the new GS. Plotting vectors are not neccesarily equal to gridding - non-square to projection girds for example
         feed it the x,y comps defined on gs_native
         out pops new arrays on gs_new
         """
         from scipy.interpolate import LinearNDInterpolator
+        from scipy.interpolate import NearestNDInterpolator
+        from scipy.interpolate import CloughTocher2DInterpolator
         if self.vectors_plot:
             # de-rotate the input vecs (back to lon lat square)
             xr = -y*self.in_ang_c - x*self.in_ang_s
@@ -1091,11 +1276,21 @@ class Gs2Gs:
 #             xr = x*self.in_ang_c - y*self.in_ang_s
 #             yr = y*self.in_ang_c + x*self.in_ang_s
             # define the function
-            interpolator = LinearNDInterpolator(self.tri, xr.ravel())
+            if method == 'linear':
+                interpolator = LinearNDInterpolator(self.tri, xr.ravel())
+            elif method == 'nearest':
+                interpolator = NearestNDInterpolator(self.tri, xr.ravel())
+            elif method == 'cubic':
+                interpolator = CloughTocher2DInterpolator(self.tri, xr.ravel())
             # use it
             xrr = interpolator(self.mesh_new)
             # define the function
-            interpolator = LinearNDInterpolator(self.tri, yr.ravel())
+            if method == 'linear':
+                interpolator = LinearNDInterpolator(self.tri, yr.ravel())
+            elif method == 'nearest':
+                interpolator = NearestNDInterpolator(self.tri, yr.ravel())
+            elif method == 'cubic':
+                interpolator = CloughTocher2DInterpolator(self.tri, yr.ravel())
             # use it
             yrr = interpolator(self.mesh_new)
             return self.new_mplot.rotate_vector(xrr,yrr,
@@ -1104,13 +1299,15 @@ class Gs2Gs:
             print('Gs2Gs not defined for vectors, re-initialise')
             
     
-    def rg_vecs(self,x,y):
+    def rg_vecs(self,x,y,method='linear'):
         """
         the regridding function
         feed it the x,y comps defined on gs_native
         out pops a new array on gs_new
         """
         from scipy.interpolate import LinearNDInterpolator
+        from scipy.interpolate import NearestNDInterpolator
+        from scipy.interpolate import CloughTocher2DInterpolator
         if self.vectors:
             # de-rotate the input vecs (back to lon lat square)
             xr = -y*self.in_ang_c - x*self.in_ang_s
@@ -1118,11 +1315,21 @@ class Gs2Gs:
 #             xr = x*self.in_ang_c - y*self.in_ang_s
 #             yr = y*self.in_ang_c + x*self.in_ang_s
             # define the function
-            interpolator = LinearNDInterpolator(self.tri, xr.ravel())
+            if method == 'linear':
+                interpolator = LinearNDInterpolator(self.tri, xr.ravel())
+            elif method == 'nearest':
+                interpolator = NearestNDInterpolator(self.tri, xr.ravel())
+            elif method == 'cubic':
+                interpolator = CloughTocher2DInterpolator(self.tri, xr.ravel())
             # use it
             xrr = interpolator(self.mesh_new)
             # define the function
-            interpolator = LinearNDInterpolator(self.tri, yr.ravel())
+            if method == 'linear':
+                interpolator = LinearNDInterpolator(self.tri, yr.ravel())
+            elif method == 'nearest':
+                interpolator = NearestNDInterpolator(self.tri, yr.ravel())
+            elif method == 'cubic':
+                interpolator = CloughTocher2DInterpolator(self.tri, yr.ravel())
             # use it
             yrr = interpolator(self.mesh_new)
             
@@ -1156,17 +1363,20 @@ class vary_smooth2d():
                   '{:0.1f}'.format(np.nanmax(varr))+'], ['+ 
                   '{:0.1f}'.format(np.nanmean(varc))+', '+ 
                   '{:0.1f}'.format(np.nanmax(varc))+']')
-        varc[np.isnan(varc)] = 1.0
-        varc[np.isinf(varc)] = 1.0
-        varr[np.isnan(varr)] = 1.0
-        varr[np.isinf(varr)] = 1.0
-        varc[varc<1.0] = 1.0
-        varr[varr<1.0] = 1.0
+        varc[np.isnan(varc)] = 0.0
+        varc[np.isinf(varc)] = 0.0
+        varr[np.isnan(varr)] = 0.0
+        varr[np.isinf(varr)] = 0.0
+        varc[varc<1.0] = 0.0
+        varr[varr<1.0] = 0.0
         varc = varc.astype(int)
         varr = varr.astype(int)
         self.ii=ii
         self.jj=jj
-        self.matrix = sparse.lil_matrix((ii*jj,ii*jj))
+#         self.matrix = sparse.lil_matrix((ii*jj,ii*jj))
+        ijl = []
+        vvl = []
+        ddl = []
         for i in range(ii):
             for j in range(jj):
                 ## i,j are the target indicies
@@ -1176,29 +1386,45 @@ class vary_smooth2d():
                 ## are the target indice
                 ## place in the sparse matrix is np.ravel_multi_index((i,j))
                 vij = []
-                for vi in range(i-varr[i,j]+1,i+varr[i,j]):
-                    for vj in range(j-varc[i,j]+1,j+varc[i,j]):
+                for vi in range(i-varr[i,j],i+varr[i,j]+1):
+                    for vj in range(j-varc[i,j],j+varc[i,j]+1):
                         if (vi in range(ii)) and (vj in range(jj)):
                             vij.append(np.ravel_multi_index((vi,vj),(ii,jj)))
+                ## here is point for making a different kernel
+                ## current is box
                 weight = 1/np.shape(vij)[0]
         #         if np.shape(vij)[0] > 1: print(weight)
-                for vv in vij:
-                    self.matrix[ij,vv] = weight
+                for n,vv in enumerate(vij):
+                    ijl.append(ij)
+                    vvl.append(vv)
+                    ddl.append(weight)
+        if verbos: print("Smooth martix, entries = "+str(len(ijl))
+                        +", mean weights = "+'{:0.2f}'.format(np.nanmean(ddl)))
+        mat1 = sparse.coo_matrix((ddl, (ijl, vvl)))
+        self.matrix = mat1.tocsr()
         #             matrix[vv,ij] = weight
         #             if vv!=ij:print(vv,ij)
-    def smooth(self,array):
+    def smooth(self,arrayin):
         """
         Takes the initalised object with local smoothing distances
         Smooths an array using the pre-given distances
         input array here is the smae size as the initialise varr,varc
         """
+        #### need to edit so to count nans
+        array = copy.copy(arrayin)
         A = np.isnan(array)
+        An= np.isfinite(array)
         array[A] = 0.0
         a_r = array.ravel()
         narray = (self.matrix*a_r).reshape((self.ii,self.jj))
+        #### also need a count to normalise by
+        A_r = An.ravel()
+        dweight = (self.matrix*A_r).reshape((self.ii,self.jj))
+        narray = narray/dweight 
         narray[A] = np.nan
+        
         return narray
-    
+
 class geo_vary_smooth():
     """
         Uses the dimensions of a grid_set class to set appropriate
@@ -1207,7 +1433,6 @@ class geo_vary_smooth():
         by the local box dimensions
     """
     def __init__(self,grid_set,distance,verbos=False):
-        dist = 75e3
         varr = distance/grid_set.xdist
         varc = distance/grid_set.ydist
         self.Vsm2d = vary_smooth2d(varr,varc,verbos=verbos)
