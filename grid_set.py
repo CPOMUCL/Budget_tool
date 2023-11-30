@@ -1,26 +1,64 @@
 # here is the class that holds all the data days/months
 # it has all the gridding scripts needed
 # it will save load all the data/days/months as needed
-# rewriting so all grids and in i-j coords
 
 import numpy as np
-import pandas as pd
 import datetime
+import shutil
+import os
 import copy
 from netCDF4 import Dataset
-from numba import jit
+# from numba import jit
 from scipy import stats
-import data_year as dy
-from dateutil.relativedelta import relativedelta
-from mpl_toolkits.basemap import Basemap
-from scipy.interpolate import griddata
 from scipy import sparse
+from scipy.ndimage.filters import gaussian_filter
+# from mpl_toolkits.basemap import Basemap
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import shapely.vectorized
+proj_cart = ccrs.PlateCarree() 
 
 class grid_set:
 # will make one of these at a time point (as a datetime) defined by timestart
 
     def __init__(self,mplot):
-        self.mplot = mplot
+#         print(type(mplot))
+        if 'crs' in str(type(mplot)):
+            
+            ### need lon/lat to x,y
+#             def mtemp(x,y):
+#                 inshape = x.shape
+#                 if np.shape()
+            def tempm(x,y):
+                if type(x) == list:
+                    x = np.array(x)
+                    y = np.array(y)
+                inshape = np.shape(x)
+                if inshape == ():
+                    x = np.array(x)
+                    y = np.array(y)
+                    inshape = np.shape(x)
+                xy =  mplot.transform_points(proj_cart,x,y) 
+                if np.shape(inshape)[0] == 0: ### 0d input:
+                    x = xy[0,0]
+                    y = xy[0,1]
+                elif np.shape(inshape)[0] == 1: ### 1d input:
+                    x = xy[:,0]
+                    y = xy[:,1]
+                else:
+                    x = xy[:,:,0]
+                    y = xy[:,:,1]
+                return x, y
+            self.mplot = tempm
+            def tempm(x,y,lon,lat):
+                x, y =  mplot.transform_vectors(proj_cart,lon,lat,x,y) 
+                return x, y
+            self.rotate_vector = tempm
+            self.ccrs = mplot
+            ### need 
+        else:
+            self.mplot = mplot
+            self.rotate_vector = lambda x,y,lon,lat: mplot.rotate_vector(x,y,lon,lat)
         self.proj = True
         self.files = False
         self.saved = False
@@ -28,40 +66,123 @@ class grid_set:
         self.gridinfo = False
         self.masked = False
         self.data = False
-  
-        
-#     def import_regrid
-#     # takes another data, on a seperate lon/lat, and regrids into a data/day/month
     
-
-#     def import_regrid_nc
+    @property
+    def shape(self):
+        return (self.m,self.n)
         
-#     def import_regrid_vec
-#     # takes vector input, a seperate lon/lat, and regrids into a data/day/month
-#     # makes use of rotate/regrid/rotate methods to get it all pretty
-
-#     def import_regrid_vec_nc
-        
-
-
-    def set_proj(self,mplot):
-         # puts in a projection mplot too
-#        # make make sure you keep hold of regridding projs
-        self.mplot = mplot
-        self.proj = True
-    
     def reproject(self,mplot):
-            self.xpts, self.ypts = mplot(self.lons,self.lats)
+        if 'crs' in str(type(mplot)):
+            
+            ### need lon/lat to x,y
+            def tempm(x,y):
+                if type(x) == list:
+                    x = np.array(x)
+                    y = np.array(y)
+                inshape = np.shape(x)
+                if inshape == ():
+#                     print('reshaping')
+                    x = np.array(x)
+                    y = np.array(y)
+                    inshape = np.shape(x)
+                xy =  mplot.transform_points(proj_cart,x,y) 
+                if np.shape(inshape)[0] == 0: ### 0d input:
+                    x = xy[0,0]
+                    y = xy[0,1]
+                elif np.shape(inshape)[0] == 1: ### 1d input:
+                    x = xy[:,0]
+                    y = xy[:,1]
+                else:
+                    x = xy[:,:,0]
+                    y = xy[:,:,1]
+                return x, y
+            self.mplot = tempm
+            def tempm(x,y,lon,lat):
+                x, y =  mplot.transform_vectors(proj_cart,lon,lat,x,y) 
+                return x, y
+            self.rotate_vector = tempm
+            self.ccrs = mplot
+            
+        else:
             self.mplot = mplot
-            for a in dir(self):
-                if a == 'xptp':
-                    self.get_ptp()
-                    break
-        
+        ### need 
+        self.xpts, self.ypts = self.mplot(self.lons,self.lats)
+        for a in dir(self):
+            if a == 'xptp':
+                self.get_ptp()
+                break
+                
+    @property
+    def ll_extent(self):
+        x1 = self.lons.min()
+        x2 = self.lons.max()
+        y1 = self.lats.min()
+        y2 = self.lats.max()
+        return [x1,x2, y1,y2]
+
+    @property
+    def x_extent(self):
+        x1 = self.xpts.min()
+        x2 = self.xpts.max()
+        y1 = self.ypts.min()
+        y2 = self.ypts.max()
+        return [x1,x2, y1,y2]
+    
+    @property
+    def x_corners(self): # Input array : arr
+        xlist=[self.xpts[0,0],
+               self.xpts[0,-1], self.xpts[-1,-1], 
+               self.xpts[-1,0], self.xpts[0,0]]
+        ylist=[self.ypts[0,0],
+               self.ypts[0,-1], self.ypts[-1,-1], 
+               self.ypts[-1,0], self.ypts[0,0]]
+        return [[x,y] for x,y in zip(xlist,ylist)]
+    
+    @property
+    def ll_corners(self): # Input array : arr
+        xlist=[self.lons[0,0],
+               self.lons[0,-1], self.lons[-1,-1], 
+               self.lons[-1,0], self.lons[0,0]]
+        ylist=[self.lats[0,0],
+               self.lats[0,-1], self.lats[-1,-1], 
+               self.lats[-1,0], self.lats[0,0]]
+        return [[x,y] for x,y in zip(xlist,ylist)]
+    
+    @property
+    def x_border(self): # Input array : arr
+        xlist=border(self.xpts)
+        ylist=border(self.ypts)
+        return np.vstack((xlist,ylist)).T
+
+    @property
+    def ll_border(self): # Input array : arr
+        xlist=border(self.lons)
+        ylist=border(self.lats)
+        return np.vstack((xlist,ylist)).T
+    
+    def lims_from_lonlat(self,points,for_extent = False):
+        x,y = self.mplot(points[0][0],points[0][1])
+        x1,x2 = copy.copy(x),copy.copy(x)
+        y1,y2 = copy.copy(y),copy.copy(y)
+        if len(points) < 2:
+            print('We need more than one point to create limits')
+        for p in points[1:]:
+            x,y = self.mplot(p[0],p[1])
+            x1 = np.minimum(x1,x)
+            x2 = np.maximum(x2,x)
+            y1 = np.minimum(y1,y)
+            y2 = np.maximum(y2,y)
+        if for_extent:
+            return [x1,x2, y1,y2]
+        else:
+            return (x1,x2), (y1,y2)
+  
     def set_grid_lon_lat(self,lons,lats,grid_list = False,fill_lonlat = False):
        # creates a grid depending on wanted resolution 
         if fill_lonlat:
             lons,lats = np.meshgrid(lons,lats)
+            lons = lons.T
+            lats = lats.T
         if self.proj:
             xpts, ypts = self.mplot(lons,lats)
             self.lons = lons
@@ -89,56 +210,188 @@ class grid_set:
                 print("Got a grid res = ",self.m," x ",self.n)
                 print("Note that all grid info is in nx x ny grids, whilst data is in nx x ny")
         else: print("Projection not defined yet, do that first")
-            
-    def get_ptp(self):
-        """
-        Generates pts arrays for pcolor and pcolormesh - midpoitns for grid areas
-        """
-        if self.grid:
-            # extend longitude by 2
-            xpt_pad = np.pad(self.xpts, ((0,0),(1,0)), 'edge')
-            ypt_pad = np.pad(self.ypts, ((1,0),(0,0)), 'edge')
-
-            self.xptp = xpt_pad[:,:-1]+0.5*(np.diff(xpt_pad,axis=1))
-            self.yptp = ypt_pad[:-1,:]+0.5*(np.diff(ypt_pad,axis=0))
-            
-
-    def set_grid_dxy(self,dxRes,dyRes):
+    
+    def set_grid_dxy(self,dxRes,dyRes,ax=None):
        # creates a grid depending on wanted resolution 
-        if self.proj:
+        if hasattr(self,'ccrs'):
+            self.xmin, self.xmax = ax.get_xlim()
+            self.ymin, self.ymax = ax.get_ylim()
+            nx = np.abs(int((self.xmax-self.xmin)/dxRes)+1)
+            ny = np.abs(int((self.ymax-self.ymin)/dyRes)+1)
+            xpts,ypts = np.meshgrid(
+                            np.linspace(self.xmin,self.xmax,nx),
+                            np.linspace(self.ymin,self.ymax,ny),indexing = 'ij')
+            lonlat = proj_cart.transform_points(self.ccrs,xpts,ypts)
+            self.lons = lonlat[:,:,0]
+            self.lats = lonlat[:,:,1]
+        else:
             nx = int((self.mplot.xmax-self.mplot.xmin)/dxRes)+1
             ny = int((self.mplot.ymax-self.mplot.ymin)/dyRes)+1
-            lons, lats, xpts, ypts = self.mplot.makegrid(ny, nx, returnxy=True)
+            lons, lats, xpts, ypts = self.mplot.makegrid(nx, ny, returnxy=True)
             self.lons = lons
             self.lats = lats
-            self.xpts = xpts
-            self.ypts = ypts
-            self.dxRes = dxRes
-            self.dyRes = dyRes
-            self.grid = True
-            self.m = nx
-            self.n = ny
-            print("Got a grid res = ",nx," x ",ny)
-            print("Note that all grid info is in nx x ny grids, whilst data is in nx x ny")
-        else: print("Projection not defined yet, do that first")
+        self.xpts = xpts
+        self.ypts = ypts
+        self.dxRes = dxRes
+        self.dyRes = dyRes
+        self.grid = True
+        self.m = nx
+        self.n = ny
+        print("Got a grid res = ",nx," x ",ny)
+        print("Note that all grid info is in nx x ny grids, whilst data is in nx x ny")
 
-    def set_grid_mn(self,nx,ny):
+    def set_grid_mn(self,nx,ny,ax=None):
        # creates a grid depending on wanted no. of points 
-        if self.proj:
-            lons, lats, xpts, ypts = self.mplot.makegrid(ny, nx, returnxy=True)
+        if hasattr(self,'ccrs'):
+            self.xmin, self.xmax = ax.get_xlim()
+            self.ymin, self.ymax = ax.get_ylim()
+            xpts,ypts = np.meshgrid(
+                            np.linspace(self.xmin,self.xmax,nx),
+                            np.linspace(self.ymin,self.ymax,ny),indexing = 'ij')
+            lonlat = proj_cart.transform_points(self.ccrs,xpts,ypts)
+            self.lons = lonlat[:,:,0]
+            self.lats = lonlat[:,:,1]
+            self.dxRes = (self.xmax-self.xmin)/(nx - 1)
+            self.dyRes = (self.ymax-self.ymin)/(ny - 1)
+        else:
+            lons, lats, xpts, ypts = self.mplot.makegrid(nx, ny, returnxy=True)
             self.lons = lons
             self.lats = lats
-            self.xpts = xpts
-            self.ypts = ypts
-            self.grid = True
             self.dxRes = (self.mplot.xmax-self.mplot.xmin)/(nx - 1)
             self.dyRes = (self.mplot.ymax-self.mplot.ymin)/(ny - 1)
-            self.m = nx
-            self.n = ny
-            print("Got a grid res = ",nx," x ",ny)
-        else: print("Projection not defined yet, do that first")
+        self.xpts = xpts
+        self.ypts = ypts
+        self.grid = True
+        self.m = nx
+        self.n = ny
+        print("Got a grid res = ",nx," x ",ny)
+        
+    def set_gate_grid(self,lonG,latG,npoints=100,aspect=100,res=None):
+       # creates a grid depending on wanted resolution 
+        """
+        set_gate_grid method, creates a 2xn gate grid to view flow between two points
+        gate is two points wide in order to get the normal direction across it correct
+        
+        Parameters
+        ---------
+        lonG
+            [lon point 1, lon point 2] list or tuple of the longitude of the two points
+        latG
+            [lat point 1, lat point 2] list or tuple of the latitude  of the two points
+        npoints: int, optional 
+            the number of points across the gate, default = 100
+        aspect: float, optional 
+            the ratio between the gate length and the two point width, default = 100
+        res: float, optional
+            alternatively we can select a distance here in meteres to space the points by approximate this distance. Here npoints will be equal to point1->point2/res + 1. Default = None
+        
+        """
+        if res is not None:
+            ### (long1, lat1, long2, lat2,deg=False,eps=1e-10)
+            gate_dist = ellipsoidal_distance(lonG[0],latG[0],lonG[1],latG[1],deg=True)
+            npoints = int(gate_dist/res)+1
+            print('Setting npoints from res, npoints = '+str(npoints))
+        x,y = self.mplot(np.array(lonG),np.array(latG))
+        xpts = np.linspace(x[0],x[1],npoints)
+        ypts = np.linspace(y[0],y[1],npoints)
+
+        ystep = (xpts[-1]- xpts[0])/aspect
+        xstep = (ypts[-1]- ypts[0])/aspect
+
+        xpts = np.vstack([xpts,xpts - xstep]).T
+        ypts = np.vstack([ypts,ypts + ystep]).T
+        if hasattr(self,'ccrs'):
+            lonlat = proj_cart.transform_points(self.ccrs,xpts,ypts)
+            self.lons = lonlat[:,:,0]
+            self.lats = lonlat[:,:,1]
+        else:
+            lons,lats = self.mplot(xpts,ypts,inverse=True)
+            self.lons = lons
+            self.lats = lats
+        self.xpts = xpts
+        self.ypts = ypts
+        self.dxRes = np.abs(ystep)
+        self.dyRes = np.abs(xstep)
+        self.grid = True
+        self.m = npoints
+        self.n = 2
+        print("Got a gate res = ",self.m," ({:g} m)".format(self.dxRes),
+              " x ",self.n)
+
 
     def get_grid_info(self,av_dist = True, av_ang = True):
+       # creates a grid depending on wanted no. of points 
+        # print( self.grid and (not self.gridinfo))
+        if self.grid and (not self.gridinfo):
+            #iterate over the grid to get dimensions and angles
+            # first iterate all x dimensions - m-1/n array
+            # then  iterate all y dimensions - m/n-1 array
+            lon_pad = np.pad(self.lons, (1,1), 'linear_ramp', end_values=(np.nan))
+            lat_pad = np.pad(self.lats, (1,1), 'linear_ramp', end_values=(np.nan))
+                
+            tempf = lambda x1,y1,x2,y2: ellipsoidal_distance(x1,y1,x2,y2,deg=True)
+
+            xdims = np.vectorize(tempf)(
+                       lon_pad[ :-1,1:-1],lat_pad[ :-1,1:-1],
+                       lon_pad[1:  ,1:-1],lat_pad[1:  ,1:-1])
+            ydims= np.vectorize(tempf)(
+                       lon_pad[1:-1, :-1],lat_pad[1:-1, :-1],
+                       lon_pad[1:-1,1:  ],lat_pad[1:-1,1:  ])
+            
+            
+
+            # then average the available distances i-1,i j-1,j
+            if av_dist:
+                self.xdist = np.nanmean([xdims[1:,:],xdims[:-1,:]],axis=0)
+                self.ydist = np.nanmean([ydims[:,1:],ydims[:,:-1]],axis=0)
+            else:
+                self.xdist = np.ones([self.m,self.n])*np.nan
+                self.ydist = np.ones([self.m,self.n])*np.nan
+                self.xdist[:-1,:] = xdims[1:-1,:]
+                self.xdist[-1,:]  = xdims[-1,:]
+                self.ydist[:,:-1] = ydims[:,1:-1]
+                self.ydist[:,-1]  = ydims[:,-1]
+            print("Grid distances calculated: ",np.nanmean(self.xdist)," x ",np.nanmean(self.ydist))
+                     
+            # then  iterate all angles - this is all points plus the extra possible angles
+            # pad the lon lat arrays for iteration
+            tempf = lambda x1,y1,x2,y2: lon_lat_angle(x1,y1,x2,y2,
+                                            return_trig = True,deg=True)
+            yPlus_c,yPlus_s =  np.vectorize(tempf)(
+                           lon_pad[1:-1,1:-1],lat_pad[1:-1,1:-1],
+                           lon_pad[1:-1,2:  ],lat_pad[1:-1,2:  ])
+            if av_ang:
+                # xplus xPlus_c, -xPlus_s
+                xPlus_c,xPlus_s =  np.vectorize(tempf)(
+                           lon_pad[1:-1,1:-1],lat_pad[1:-1,1:-1],
+                           lon_pad[2:  ,1:-1],lat_pad[2:  ,1:-1])
+                # xmin -xPlus_c, xPlus_s
+                xMins_c,xMins_s =  np.vectorize(tempf)(
+                           lon_pad[1:-1,1:-1],lat_pad[1:-1,1:-1],
+                           lon_pad[ :-2,1:-1],lat_pad[ :-2,1:-1])
+                # ymin -yMins_s, -yMins_c
+                yMins_c,yMins_s =  np.vectorize(tempf)(
+                           lon_pad[1:-1,1:-1],lat_pad[1:-1,1:-1],
+                           lon_pad[1:-1, :-2],lat_pad[1:-1, :-2])
+            # average all the components first checking the orientation
+            # if j == 20 and i ==12:
+#                 print([xPlus_c,xMins_c,yPlus_c,yMins_c])
+#                 print([xPlus_s,xMins_s,yPlus_s,yMins_s])
+            if av_ang:
+                self.ang_c = np.nanmean([-xPlus_s, xMins_s, yPlus_c,-yMins_c],axis=0)
+                self.ang_s = np.nanmean([ xPlus_c,-xMins_c, yPlus_s,-yMins_s],axis=0)
+#                 mag = np.hypot(self.ang_c,self.ang_s)
+#                 self.ang_c /= mag
+#                 self.ang_s /= mag
+            else:
+                self.ang_c =  yPlus_c
+                self.ang_s =  yPlus_s
+            print('Angles calculated')
+            self.gridinfo = True
+        else: print("Grid not defined yet, do that first")
+
+
+    def get_grid_info_old(self,av_dist = True, av_ang = True):
        # creates a grid depending on wanted no. of points 
         # print( self.grid and (not self.gridinfo))
         if self.grid and (not self.gridinfo):
@@ -153,14 +406,20 @@ class grid_set:
             self.ang_s = np.empty([self.m,self.n])
             for i in range(self.m):
                 for j in range(self.n-1):
-                    ydims[i,j] = ellipsoidal_distance(
-                        self.lons[i,j  ],self.lats[i,j  ],
-                        self.lons[i,j+1],self.lats[i,j+1],deg=True)
+                    try:
+                        ydims[i,j] = ellipsoidal_distance(
+                            self.lons[i,j  ],self.lats[i,j  ],
+                            self.lons[i,j+1],self.lats[i,j+1],deg=True)
+                    except ZeroDivisionError:
+                        ydims[i,j] = 0.0
             for i in range(self.m-1):
                 for j in range(self.n):
-                    xdims[i,j] = ellipsoidal_distance(
-                        self.lons[i  ,j],self.lats[i  ,j],
-                        self.lons[i+1,j],self.lats[i+1,j],deg=True)
+                    try:
+                        xdims[i,j] = ellipsoidal_distance(
+                            self.lons[i  ,j],self.lats[i  ,j],
+                            self.lons[i+1,j],self.lats[i+1,j],deg=True)
+                    except ZeroDivisionError:
+                        xdims[i,j] = 0.0
 
             # then average the available distances i-1,i j-1,j
             if av_dist:
@@ -179,46 +438,101 @@ class grid_set:
             # pad the lon lat arrays for iteration
             lon_pad = np.pad(self.lons, (1,1), 'linear_ramp', end_values=(np.nan))
             lat_pad = np.pad(self.lats, (1,1), 'linear_ramp', end_values=(np.nan))
-            for j in range(self.m):
-                for i in range(self.n):
+            for i in range(self.m):
+                for j in range(self.n):
                     # i + angle
-                    yPlus_c,yPlus_s = lon_lat_angle(lon_pad[j+1,i+1],lat_pad[j+1,i+1],
-                                                    lon_pad[j+2,i+1],lat_pad[j+2,i+1],
+                    yPlus_c,yPlus_s = lon_lat_angle(lon_pad[i+1,j+1],lat_pad[i+1,j+1],
+                                                    lon_pad[i+1,j+2],lat_pad[i+1,j+2],
                                                     return_trig = True,deg=True)
                     if av_ang:
-                        xPlus_c,xPlus_s = lon_lat_angle(lon_pad[j+1,i+1],lat_pad[j+1,i+1],
-                                                        lon_pad[j+1,i+2],lat_pad[j+1,i+2],
+                        xPlus_c,xPlus_s = lon_lat_angle(lon_pad[i+1,j+1],lat_pad[i+1,j+1],
+                                                        lon_pad[i+2,j+1],lat_pad[i+2,j+1],
                                                         return_trig = True,deg=True)
-                        xMins_c,xMins_s = lon_lat_angle(lon_pad[j+1,i+1],lat_pad[j+1,i+1],
-                                                        lon_pad[j+1,i  ],lat_pad[j+1,i  ],
+                        xMins_c,xMins_s = lon_lat_angle(lon_pad[i+1,j+1],lat_pad[i+1,j+1],
+                                                        lon_pad[i  ,j+1],lat_pad[i  ,j+1],
                                                         return_trig = True,deg=True)
-                        yMins_c,yMins_s = lon_lat_angle(lon_pad[j+1,i+1],lat_pad[j+1,i+1],
-                                                        lon_pad[j  ,i+1],lat_pad[j  ,i+1],
+                        yMins_c,yMins_s = lon_lat_angle(lon_pad[i+1,j+1],lat_pad[i+1,j+1],
+                                                        lon_pad[i+1,j  ],lat_pad[i+1,j  ],
                                                         return_trig = True,deg=True)
                     # average all the components first checking the orientation
                     # if j == 20 and i ==12:
                         # print([xPlus_c,xMins_c,yPlus_c,yMins_c])
                         # print([xPlus_s,xMins_s,yPlus_s,yMins_s])
                     if av_ang:
-                        self.ang_c[j,i] = np.nanmean([-xPlus_s, xMins_s, yPlus_c,-yMins_c])
-                        self.ang_s[j,i] = np.nanmean([ xPlus_c,-xMins_c, yPlus_s,-yMins_s])
-                        mag = np.hypot(self.ang_c[j,i],self.ang_s[j,i])
-                        self.ang_c[j,i] /= mag
-                        self.ang_s[j,i] /= mag
+                        self.ang_c[i,j] = np.nanmean([-xPlus_s, xMins_s, yPlus_c,-yMins_c])
+                        self.ang_s[i,j] = np.nanmean([ xPlus_c,-xMins_c, yPlus_s,-yMins_s])
+                        mag = np.hypot(self.ang_c[i,j],self.ang_s[i,j])
+                        self.ang_c[i,j] /= mag
+                        self.ang_s[i,j] /= mag
                     else:
-                        self.ang_c[j,i] =  yPlus_c
-                        self.ang_s[j,i] =  yPlus_s
+                        self.ang_c[i,j] =  yPlus_c
+                        self.ang_s[i,j] =  yPlus_s
             print('Angles calculated')
             self.gridinfo = True
         else: print("Grid not defined yet, do that first")
+            
+    @property
+    def limits(self):
+        return [
+            np.min(self.xpts),np.max(self.xpts),
+            np.min(self.ypts),np.max(self.ypts),
+                ]
+        
+
+    #### these are midpoints for plotting 
+    @property
+    def xptp(self):
+        if not hasattr(self,'_xptp'):
+            self.get_ptp()
+        return self._xptp
+    
+    @property
+    def yptp(self):
+        if not hasattr(self,'_yptp'):
+            self.get_ptp()
+        return self._yptp
+    
+    def get_ptp(self):
+        """
+        Generates pts arrays for pcolor and pcolormesh - midpoitns for grid areas
+        """
+        if self.grid:
+            # extend longitude by 2
+            xpt_pad = np.pad(self.xpts, ((1,0),(0,0)), 'edge')
+            ypt_pad = np.pad(self.ypts, ((0,0),(1,0)), 'edge')
+            self._xptp = xpt_pad[:-1,:]+0.5*(np.diff(xpt_pad,axis=0))
+            self._yptp = ypt_pad[:,:-1]+0.5*(np.diff(ypt_pad,axis=1))
+#             xpt_pad = np.pad(self.xpts, ((0,0),(1,0)), 'edge')
+#             ypt_pad = np.pad(self.ypts, ((1,0),(0,0)), 'edge')
+#             self.xptp = xpt_pad[:,:-1]+0.5*(np.diff(xpt_pad,axis=0))
+#             self.yptp = ypt_pad[:-1,:]+0.5*(np.diff(ypt_pad,axis=1))
+            
+    
+    #### these are square points for plotting 
+    @property
+    def xsq(self):
+        if not hasattr(self,'_xsq'):
+            self.get_square_points()
+        return self._xsq
+    
+    @property
+    def ysq(self):
+        if not hasattr(self,'_ysq'):
+            self.get_square_points()
+        return self._ysq
+    
 
     def get_square_points(self):
         """
         makes the xsq,ysq fields that will let you plot on a square grid
         uses np.meshgrid to make location arrasy statring lower left at (0,0)
         """
-        self.xsq,self.ysq = np.meshgrid(np.linspace(0,1,self.m),np.linspace(0,1,self.n),indexing = 'ij')
-            
+        self._xsq,self._ysq = np.meshgrid(np.linspace(0,1,self.m),np.linspace(0,1,self.n),indexing = 'ij')
+
+    @property
+    def area(self):
+        return self.xdist*self.ydist
+        
     def check_angles(self,point=False,scale=1.0,project = False):
         # return np.hypot of con/sin, min/max and mean
         check_ang = np.hypot(self.ang_c,self.ang_s)**2
@@ -236,14 +550,14 @@ class grid_set:
             # due north (easy)
             xrot = np.array(0.0) #-self.ang_s[i,j]
             yrot = np.array(1.0) # self.ang_c[i,j]
-            u,v = self.mplot.rotate_vector(xrot,yrot,self.lons[i,j],self.lats[i,j])
+            u,v = self.rotate_vector(xrot,yrot,self.lons[i,j],self.lats[i,j])
             # vertical on grid (0,1)
             xrot = -self.ang_c[i,j]
             yrot = -self.ang_s[i,j]
 #             # horizontal on grid (1,0)
 #             xrot = -self.ang_s[i,j]
 #             yrot =  self.ang_c[i,j] 
-            u1,v1 = self.mplot.rotate_vector(xrot,yrot,self.lons[i,j],self.lats[i,j])
+            u1,v1 = self.rotate_vector(xrot,yrot,self.lons[i,j],self.lats[i,j])
             return u,v,u1,v1,Out1[0],Out1[1]
         elif type(point) == list:
             # returns two normalised vectors
@@ -283,9 +597,19 @@ class grid_set:
         ur = -yvec*self.ang_c - xvec*self.ang_s
         vr =  xvec*self.ang_c - yvec*self.ang_s
         
-        urr,vrr = self.mplot.rotate_vector(ur,vr,self.lons,self.lats)
+        urr,vrr = self.rotate_vector(ur,vr,self.lons,self.lats)
         return urr,vrr
+    
+    def blank_grid_info(self):
+        if not self.gridinfo:
+            self.ang_c = np.zeros_like(self.lons,dtype=bool)
+            self.ang_s = np.zeros_like(self.lons,dtype=bool)
+            self.xdist = np.zeros_like(self.lons,dtype=bool)
+            self.ydist = np.zeros_like(self.lons,dtype=bool)
+            self.gridinfo = True
+            
         
+            
     def save_grid(self,file):
         if self.grid and self.gridinfo:
             # save lat/lon pts 
@@ -306,6 +630,7 @@ class grid_set:
         else:
             print("No grid to save - run get_grid_info")
 
+
     def save_grid_nc(self,file,notes=''):
         if self.grid and self.gridinfo:
             # save lat/lon pts 
@@ -314,7 +639,6 @@ class grid_set:
 
             
             # dimensions
-            NC_f.createDimension('time', None)
             NC_f.createDimension('x', self.m)
             NC_f.createDimension('y', self.n)
 
@@ -322,25 +646,19 @@ class grid_set:
 #             time = NC_f.createVariable('time', 'f8', ('time',))
             x = NC_f.createVariable('x', 'f4', ('x',))
             y = NC_f.createVariable('y', 'f4', ('y',))
-            lons  = NC_f.createVariable('lons', 'f8', ('y', 'x',))
-            lats  = NC_f.createVariable('lats', 'f8', ('y', 'x',))
-            xpts  = NC_f.createVariable('xpts', 'f8', ('y', 'x',))
-            ypts  = NC_f.createVariable('ypts', 'f8', ('y', 'x',))
-            ang_c = NC_f.createVariable('ang_c', 'f8',('y', 'x',))
-            ang_s = NC_f.createVariable('ang_s', 'f8',('y', 'x',))
-            xdist = NC_f.createVariable('xdist', 'f8',('y', 'x',))
-            ydist = NC_f.createVariable('ydist', 'f8',('y', 'x',))
+            lons  = NC_f.createVariable('lons', 'f8', ('x', 'y',))
+            lats  = NC_f.createVariable('lats', 'f8', ('x', 'y',))
+            ang_c = NC_f.createVariable('ang_c', 'f8',('x', 'y',))
+            ang_s = NC_f.createVariable('ang_s', 'f8',('x', 'y',))
+            xdist = NC_f.createVariable('xdist', 'f8',('x', 'y',))
+            ydist = NC_f.createVariable('ydist', 'f8',('x', 'y',))
             
             NC_f.setncattr_string('dxRes',self.dxRes)
             NC_f.setncattr_string('dyRes',self.dyRes)
 
             
-            x[:] =self.xpts[0,:]
-            y[:] =self.ypts[:,0]
             lons[:,:] = self.lons
             lats[:,:] = self.lats
-            xpts[:,:] = self.xpts
-            ypts[:,:] = self.ypts
             ang_c[:,:] = self.ang_c
             ang_s[:,:] = self.ang_s
             xdist[:,:] = self.xdist
@@ -348,41 +666,26 @@ class grid_set:
 
 
             NC_f.close()
-#             np.savez(file,
-#                 lats = self.lats,
-#                 lons = self.lons,
-#                 xpts = self.xpts,
-#                 ypts = self.ypts,
-#                 dxRes = self.dxRes,
-#                 dyRes = self.dyRes,
-#                 m = self.m,
-#                 n = self.n,
-#                 ang_c = self.ang_c,
-#                 ang_s = self.ang_s,
-#                 xdist = self.xdist,
-#                 ydist = self.ydist)
-            print("Grid saved in "+file)
-        else:
-            print("No grid to save - run get_grid_info")
-
-    def load_grid(self,file,grid_list=False):
-        with np.load(file) as npzfile:
-            self.lats = npzfile["lats"]
-            self.lons = npzfile["lons"]
-            self.xpts = npzfile["xpts"]
-            self.ypts = npzfile["ypts"]
-            self.dxRes = npzfile["dxRes"] 
-            self.dyRes = npzfile["dyRes"] 
-            self.m = npzfile["m"][()] 
-            self.n = npzfile["n"][()]
-            self.ang_c = npzfile["ang_c"] 
-            self.ang_s = npzfile["ang_s"] 
-            self.xdist = npzfile["xdist"] 
-            self.ydist = npzfile["ydist"] 
+            
+    def load_grid(self,file):
+        npzfile =  np.load(file)
+        self.lats = npzfile["lats"]
+        self.lons = npzfile["lons"]
+#         self.xpts = npzfile["xpts"]
+#         self.ypts = npzfile["ypts"]
+        self.dxRes = npzfile["dxRes"] 
+        self.dyRes = npzfile["dyRes"] 
+        self.m = npzfile["m"] 
+        self.n = npzfile["n"] 
+        if type(self.m) == np.ndarray: self.m = self.m[()]
+        if type(self.n) == np.ndarray: self.n = self.n[()]
+        self.ang_c = npzfile["ang_c"] 
+        self.ang_s = npzfile["ang_s"] 
+        self.xdist = npzfile["xdist"] 
+        self.ydist = npzfile["ydist"] 
         self.grid = True
         self.gridinfo = True
-        if not grid_list:
-            self.get_ptp()
+        self.reproject(self.mplot)
         print("Loaded a grid: "+file)
 
     def check_grid(self):
@@ -398,26 +701,28 @@ class grid_set:
     def get_grid_mask(self,inflate = 0.0):
         # makes a land mask for each point then inflates by a distance m
         # makes a land mask for each point then inflates by a distance m
-        if self.masked:
-            print("Already masked, do it again? set mask = False first")
+        if hasattr(self,'ccrs'):
+            Tlons = self.lons.copy()
+            Tlons[Tlons>180] -= 360
+            ocean = cfeature.OCEAN
+            allocean = list(ocean.geometries())
+            mask = np.sum([shapely.vectorized.contains(c, Tlons, self.lats) 
+                                   for c in allocean],axis=0)
+            self.mask = np.ones([self.m,self.n])*np.nan
+            self.mask[mask==1] = 1.0
+            self.masked =True
+            self.mask_inflate = 0.0
         else:
             self.mask = np.ones([self.m,self.n])
             for i in range(self.m):
                 for j in range(self.n):
                     if self.mplot.is_land(self.xpts[i,j],self.ypts[i,j]):
                          self.mask[i,j] = np.nan
+            self.masked =True
+            self.mask_inflate = 0.0
             inf_mask = np.ones([self.m,self.n])
-            if (inflate>0.0) and self.gridinfo:
-                self.mask_inflate = inflate
-                for i in range(self.m):
-                    for j in range(self.n):
-                        if np.isnan(self.mask[i,j]):
-                            inf_p = int(inflate/np.hypot(self.xdist[i,j],self.ydist[i,j]))
-                            inf_mask[i-inf_p:i+inf_p+1,j-inf_p:j+inf_p+1] = np.nan
-                self.mask = inf_mask
-            elif self.gridinfo:
-                self.mask_inflate = inflate
-        self.masked = True
+        if (inflate>0.0) and self.gridinfo:
+            self.inflate_mask(inflate)
         
 
     def inflate_mask(self,inflate = 0.0):
@@ -426,7 +731,10 @@ class grid_set:
         if self.masked and self.gridinfo:
             inf_mask = np.ones([self.m,self.n])
             if (inflate>0.0) and self.gridinfo:
-                self.mask_inflate = inflate
+                if hasattr(self,'mask_inflate'):
+                    self.mask_inflate += inflate
+                else:
+                    self.mask_inflate = inflate
                 for i in range(self.m):
                     for j in range(self.n):
                         if np.isnan(self.mask[i,j]):
@@ -452,6 +760,8 @@ class grid_set:
             self.mask[x,y] = np.nan
             
 
+
+
     def save_mask(self,file):
         if self.masked:
             # save lat/lon pts 
@@ -470,11 +780,11 @@ class grid_set:
             print("Masked already!")
         elif self.gridinfo:
             # save lat/lon pts 
-            with np.load(file) as npzfile:
-                self.mask = npzfile["mask"]
-                self.mask_inflate = npzfile["mask_inflate"]
-                m_check = npzfile["m"] 
-                n_check = npzfile["n"] 
+            npzfile =  np.load(file)
+            self.mask = npzfile["mask"]
+            self.mask_inflate = npzfile["mask_inflate"]
+            m_check = npzfile["m"] 
+            n_check = npzfile["n"] 
             if (m_check == self.m)&(n_check == self.n):
                 print("Loaded mask, ",m_check," x ",n_check," inflated by ",self.mask_inflate)
                 self.masked = True
@@ -492,10 +802,10 @@ class grid_set:
         out = 'float' makes the out array a float, 1.0 unmasked, np.nan = masked
         """
         new_mask = np.ones_like(self.mask)
-        new_mask[self.lats.T<lat_r[0]] =np.nan
-        new_mask[self.lats.T>lat_r[1]] =np.nan
-        new_mask[self.lons.T<lon_r[0]] =np.nan
-        new_mask[self.lons.T>lon_r[1]] =np.nan
+        new_mask[self.lats<lat_r[0]] =np.nan
+        new_mask[self.lats>lat_r[1]] =np.nan
+        new_mask[self.lons<lon_r[0]] =np.nan
+        new_mask[self.lons>lon_r[1]] =np.nan
         if add_mask:
             new_mask[np.isnan(self.mask)] =np.nan
         if out == 'Float':
@@ -504,6 +814,7 @@ class grid_set:
             out_mask = np.ones_like(self.mask,dtype=bool)
             out_mask[np.isnan(new_mask)] = False
             return out_mask
+
 
     def GS2track(self,arr,lon,lat,method='linear',save_array = False):
         """
@@ -601,22 +912,22 @@ class grid_set:
         stat_append = False
         if append is not False: stat_append = True
             
-        if not hasattr(self, 'edges_x'):
+        if not hasattr(self, 'edges_x') or xy_order!=self.xy_order:
             dims = np.shape(self.xpts)
             self.xy_order = xy_order
-            if   xy_order == 0:
+            if xy_order == 0:
                 self.edges_x = np.zeros(dims[0]+1)
                 self.edges_y = np.zeros(dims[1]+1)
-                self.edges_x[0:-1] = self.xpts[0,:] 
-                self.edges_y[0:-1] = self.ypts[:,0]
+                self.edges_x[0:-1] = self.xpts[:,0] 
+                self.edges_y[0:-1] = self.ypts[0,:]
             elif xy_order == 1:
                 self.edges_x = np.zeros(dims[1]+1)
                 self.edges_y = np.zeros(dims[0]+1)
-                self.edges_x[0:-1] = self.xpts[:,0] 
-                self.edges_y[0:-1] = self.ypts[0,:]
+                self.edges_x[0:-1] = self.xpts[0,:] 
+                self.edges_y[0:-1] = self.ypts[:,0]
             xshift = np.mean(np.diff(self.edges_x))
             yshift = np.mean(np.diff(self.edges_y))
-            self.edges_x[-1] = 2*self.edges_x[-2] - self.edges_y[-3]
+            self.edges_x[-1] = 2*self.edges_x[-2] - self.edges_x[-3]
             self.edges_y[-1] = 2*self.edges_y[-2] - self.edges_y[-3]
             self.edges_x = self.edges_x - xshift
             self.edges_y = self.edges_y - yshift
@@ -636,9 +947,12 @@ class grid_set:
 #         return [self.edges_x-xshift,self.edges_y-yshift]
         ret = stats.binned_statistic_2d(x[msk],y[msk],
                             data_list[msk],statistic=bin_func, 
-                            bins=[slf.edges_x,self.edges_y])
+                            bins=[self.edges_x,self.edges_y])
         #### now return array
-        outarr = ret.statistic.T
+        if self.xy_order == 1:
+            outarr = ret.statistic.T
+        else:
+            outarr = ret.statistic
         ### flip outputs if needed
         if ((self.xy_order == 0 and self.descx) 
             or (self.xy_order == 1 and self.descy)):
@@ -653,7 +967,10 @@ class grid_set:
             ret = stats.binned_statistic_2d(x[msk],y[msk],
                             data_list[msk],statistic='count', 
                             bins=[self.edges_x,self.edges_y])
-            outcount = ret.statistic.T
+            if self.xy_order == 1:
+                outcount = ret.statistic.T
+            else:
+                outcount = ret.statistic
             if ((self.xy_order == 0 and self.descx) 
                 or (self.xy_order == 1 and self.descy)):
                 outcount = np.fliplr(outcount)
@@ -677,6 +994,82 @@ class grid_set:
             return outarr,outcount
         else:
             return outarr
+
+    def hist_bin_list(self,data_list,lons,lats,hist_bins,
+                 xy_order = 0,append = False,verbos=False):
+        from scipy import stats
+        """
+        uses the grid_set to bin data points into historgrams
+        will only work well with grids and projections that are 'squarish'
+        If the grid is too distorted then this won't be accurate
+        If the gird is say diagonally orientated to the projection 
+            again this won't work
+        Uses the scipy.stats.binned_statistics_dd
+        data_list =  list of data points (list np.array data_frame column)
+        lon/lat =  the same as data_list but lon/lat
+        hist_bins = bin edges for the per pixel histograms
+        xy_order is for intialising the grid_bin
+            default = 0, expecting xpts to increase in the x direction
+            set to  = 1, for xpts increasing in the y direction (odd grid)
+        """
+        stat_append = False
+        if append is not False: 
+            stat_append = True
+            if append.shape[2] != hist_bins.shape[0]-1:
+                print('Appending data is not consistent with hist_bins')
+                return False
+            
+        if not hasattr(self, 'edges_x') or xy_order!=self.xy_order:
+            dims = np.shape(self.xpts)
+            self.xy_order = xy_order
+            if xy_order == 0:
+                self.edges_x = np.zeros(dims[0]+1)
+                self.edges_y = np.zeros(dims[1]+1)
+                self.edges_x[0:-1] = self.xpts[:,0] 
+                self.edges_y[0:-1] = self.ypts[0,:]
+            elif xy_order == 1:
+                self.edges_x = np.zeros(dims[1]+1)
+                self.edges_y = np.zeros(dims[0]+1)
+                self.edges_x[0:-1] = self.xpts[0,:] 
+                self.edges_y[0:-1] = self.ypts[:,0]
+            xshift = np.mean(np.diff(self.edges_x))
+            yshift = np.mean(np.diff(self.edges_y))
+            self.edges_x[-1] = 2*self.edges_x[-2] - self.edges_x[-3]
+            self.edges_y[-1] = 2*self.edges_y[-2] - self.edges_y[-3]
+            self.edges_x = self.edges_x - xshift
+            self.edges_y = self.edges_y - yshift
+            #### we can't have dcreasing bins so let's shift them
+            self.descx = False
+            self.descy = False
+            if np.sum(np.diff(self.edges_x))<0.0: 
+                self.edges_x = np.flip(self.edges_x)
+                self.descx = True
+            if np.sum(np.diff(self.edges_y))<0.0: 
+                self.edges_y = np.flip(self.edges_y)
+                self.descy = True
+        
+        x,y = self.mplot(lons,lats)
+        msk = np.isfinite(data_list) & np.isfinite(lons) & np.isfinite(lats)
+        
+#         return [self.edges_x-xshift,self.edges_y-yshift]
+        ret = stats.binned_statistic_dd([x[msk],y[msk],data_list[msk]],
+                            np.zeros_like(msk),statistic='count', 
+                            bins=[self.edges_x,self.edges_y,hist_bins])
+        #### now return array
+        outarr = ret.statistic
+        ### flip outputs if needed
+        if ((self.xy_order == 0 and self.descx) 
+            or (self.xy_order == 1 and self.descy)):
+            outarr = np.fliplr(outarr)
+            if verbos: print('flipping lr')
+        if ((self.xy_order == 0 and self.descy) 
+            or (self.xy_order == 1 and self.descx)):
+            outarr = np.flipud(outarr)
+            if verbos: print('flipping ud')
+        #### or accumulate the count
+        if stat_append:
+            outarr = outarr+append
+        return outarr
 
 
 def read_nc_single(ncfile,grid_set,lonlatk,valk,fill_lonlat = False):
@@ -716,27 +1109,25 @@ def geo_gradient(array,grid_set):
     # check if grid_set has grid info
     if not grid_set.gridinfo:
         print("No grid_set geo grid info - no result")
-        return False, False
+        return False
     in_mn = np.shape(array)
     if in_mn[0]!=grid_set.m or in_mn[1]!=grid_set.n :
         print("input array or geo grid_set not consistently shaped")
-        return False, False
+        return False
     else:
         out_Dax = np.empty_like(array) 
         out_Day = np.empty_like(array) 
         # np gradient can't do an uneven array
         # so we iterate along the columns, then the rows 
-        # taking the gradient eachmtime
+        # taking the gradient each time
         # 1 . columns
         for i in range(grid_set.m):
-            temp_space = [np.sum(grid_set.ydist[i,0:j+1])
-                          for j in range(grid_set.n)]
+            temp_space = [np.sum(grid_set.ydist[i,0:j+1]) for j in range(grid_set.n)]
             out_Day[i,:] = np.gradient(
             array[i,:],temp_space)
         # 2 . rows
         for j in range(grid_set.n):
-            temp_space = [np.sum(grid_set.xdist[0:i+1,j])
-                          for i in range(grid_set.m)]
+            temp_space = [np.sum(grid_set.xdist[0:i+1,j]) for i in range(grid_set.m)]
             out_Dax[:,j] = np.gradient(
             array[:,j],temp_space)
         return out_Dax,out_Day
@@ -765,9 +1156,7 @@ def geo_curl(u,v,grid_set):
         return zeta
 
     
-    
 def de_ripple(array1,array2,rip_filt_std = 1,filt_ring_sig = 5,force_zero = False):
-    from scipy.ndimage.filters import gaussian_filter
     # find the ripples by subtracting the arrays
     ripples = array1 - array2
     # fast fourier transform the difference
@@ -788,7 +1177,6 @@ def de_ripple(array1,array2,rip_filt_std = 1,filt_ring_sig = 5,force_zero = Fals
     return back
 
 def geo_filter(array,grid_set,distance,mask = False):
-    from scipy.ndimage.filters import gaussian_filter
     """
     filter function that will take the grid info from the 
     grid_set type class to get filter distances
@@ -832,7 +1220,7 @@ def geo_filter(array,grid_set,distance,mask = False):
         out_array[:,:]=VV/WW
         out_array[np.isnan(array)] = np.nan
         
-        return out_array*mask
+        return out_array
     
 def geo_convolve(array,grid_set,distance,limits,mask = False,set_kernel = False):
     from astropy.convolution import convolve, Gaussian2DKernel
@@ -882,9 +1270,11 @@ def geo_convolve(array,grid_set,distance,limits,mask = False,set_kernel = False)
         
         return out_array
 
+
 # takes generic data and regrids it into a data_year
 def regrid_data(data,dates,lons,lats,grid_set,periods,
                 fill_lonlat = False):
+    import data_year as dy
     """
     makes a data year object, nicely regridded on D_Class grid
     time dimension of data is default 0 
@@ -908,13 +1298,14 @@ def regrid_data(data,dates,lons,lats,grid_set,periods,
     x_d, y_d = grid_set.mplot(lon_a, lat_a)
     for tt in range(n_t):
         new_d_array[tt,:,:] = griddata((x_d.ravel(), y_d.ravel()),
-                data[tt][:].ravel(), (grid_set.xpts, grid_set.ypts),
+                data[tt][:].ravel(), (grid_set.xpts.T, grid_set.ypts.T),
                 method='linear')
     return dy.data_year(new_d_array,dates,periods)
 
 # takes generic data and regrids it into a data_year
 def regrid_vectors(x,y,dates,lons,lats,grid_set,periods,
                 fill_lonlat = False,vector_angles = False):
+    import data_year as dy
     """
     makes a vector data year object, nicely regridded on D_Class grid
     time dimension of data is default 0 
@@ -946,8 +1337,8 @@ def regrid_vectors(x,y,dates,lons,lats,grid_set,periods,
         orig_c = np.ones_like(lon_a)
         orig_s = np.zeros_like(lon_a)
     else: 
-        orig_c = np.cos(np.deg2rad(vector_angles.T))
-        orig_s = np.sin(np.deg2rad(vector_angles.T))
+        orig_c = np.cos(np.deg2rad(vector_angles))
+        orig_s = np.sin(np.deg2rad(vector_angles))
     # regrid depending upon mplot and grid
     x_d, y_d = grid_set.mplot(lon_a, lat_a)
     for tt in range(n_t):
@@ -963,77 +1354,78 @@ def regrid_vectors(x,y,dates,lons,lats,grid_set,periods,
                 method='linear')
         
         # rotating to the new grid
-        new_x_array[tt] = temp_x*grid_set.ang_c.T - temp_y*grid_set.ang_s.T 
-        new_y_array[tt] = temp_y*grid_set.ang_c.T + temp_x*grid_set.ang_s.T 
+        new_x_array[tt] = temp_x*grid_set.ang_c + temp_y*grid_set.ang_s 
+        new_y_array[tt] = temp_y*grid_set.ang_c - temp_x*grid_set.ang_s 
         
     return dy.vec_data_year(new_x_array,new_y_array,dates,periods)
 
 
-@jit
-def ellipsoidal_distance(long1, lat1, long2, lat2,deg=False,eps=1e-10):
+# @jit
+def ellipsoidal_distance(long1, lat1, long2, lat2,deg=False,eps=1e-4):
     """
     (long1, lat1, long2, lat2) all in radians
     outputs a distance in m
     """
     if np.isnan([long1, lat1, long2, lat2]).any():
         return np.nan
-    else:
-        if deg:
-            long1 = np.deg2rad(long1)
-            lat1  = np.deg2rad(lat1)
-            long2 = np.deg2rad(long2)
-            lat2  = np.deg2rad(lat2)
+    if np.abs(long1-long2)<eps and np.abs(lat1-lat2)<eps:
+        return 0.0
+    if deg:
+        long1 = np.deg2rad(long1)
+        lat1  = np.deg2rad(lat1)
+        long2 = np.deg2rad(long2)
+        lat2  = np.deg2rad(lat2)
 
-        a = 6378137.0 # equatorial radius in meters
-        f = 1/298.257223563 # ellipsoid flattening
-        b = (1 - f)*a
-        tolerance = eps # to stop iteration
+    a = 6378137.0 # equatorial radius in meters
+    f = 1/298.257223563 # ellipsoid flattening
+    b = (1 - f)*a
+    tolerance = eps # to stop iteration
 
-        phi1, phi2 = lat1, lat2
-        U1 = np.arctan((1-f)*np.tan(phi1))
-        U2 = np.arctan((1-f)*np.tan(phi2))
-        L1, L2 = long1, long2
-        L = L2 - L1
-        i = 0
+    phi1, phi2 = lat1, lat2
+    U1 = np.arctan((1-f)*np.tan(phi1))
+    U2 = np.arctan((1-f)*np.tan(phi2))
+    L1, L2 = long1, long2
+    L = L2 - L1
+    i = 0
 
-        lambda_old = L + 0
+    lambda_old = L + 0
 
-        while True:
+    while True:
 
-            t =  (np.cos(U2)*np.sin(lambda_old))**2
-            t += (np.cos(U1)*np.sin(U2) - np.sin(U1)*np.cos(U2)*np.cos(lambda_old))**2
-            sin_sigma = t**0.5
-            cos_sigma = np.sin(U1)*np.sin(U2) + np.cos(U1)*np.cos(U2)*np.cos(lambda_old)
-            sigma     = np.arctan2(sin_sigma, cos_sigma)
+        t =  (np.cos(U2)*np.sin(lambda_old))**2
+        t += (np.cos(U1)*np.sin(U2) - np.sin(U1)*np.cos(U2)*np.cos(lambda_old))**2
+        sin_sigma = t**0.5
+        cos_sigma = np.sin(U1)*np.sin(U2) + np.cos(U1)*np.cos(U2)*np.cos(lambda_old)
+        sigma     = np.arctan2(sin_sigma, cos_sigma)
 
-            sin_alpha    = np.cos(U1)*np.cos(U2)*np.sin(lambda_old) / (sin_sigma)
-            cos_sq_alpha = 1 - sin_alpha**2
-            cos_2sigma_m = cos_sigma - 2*np.sin(U1)*np.sin(U2)/(cos_sq_alpha+1e-12)
-            C            = f*cos_sq_alpha*(4 + f*(4-3*cos_sq_alpha))/16
+        sin_alpha    = np.cos(U1)*np.cos(U2)*np.sin(lambda_old) / (sin_sigma)
+        cos_sq_alpha = 1 - sin_alpha**2
+        cos_2sigma_m = cos_sigma - 2*np.sin(U1)*np.sin(U2)/(cos_sq_alpha+1e-12)
+        C            = f*cos_sq_alpha*(4 + f*(4-3*cos_sq_alpha))/16
 
-            t          = sigma + C*sin_sigma*(cos_2sigma_m + C*cos_sigma*(-1 + 2*cos_2sigma_m**2))
-            lambda_new = L + (1 - C)*f*sin_alpha*t
-            if np.abs(lambda_new - lambda_old) <= tolerance:
-                break
-            elif i > 1000:
-                return np.nan
-                break
-            else:
-                lambda_old = lambda_new
-                i += 1
+        t          = sigma + C*sin_sigma*(cos_2sigma_m + C*cos_sigma*(-1 + 2*cos_2sigma_m**2))
+        lambda_new = L + (1 - C)*f*sin_alpha*t
+        if np.abs(lambda_new - lambda_old) <= tolerance:
+            break
+        elif i > 1000:
+            return np.nan
+            break
+        else:
+            lambda_old = lambda_new
+            i += 1
 
-        u2 = cos_sq_alpha*((a**2 - b**2)/b**2)
-        A  = 1 + (u2/16384)*(4096 + u2*(-768+u2*(320 - 175*u2)))
-        B  = (u2/1024)*(256 + u2*(-128 + u2*(74 - 47*u2)))
-        t  = cos_2sigma_m + 0.25*B*(cos_sigma*(-1 + 2*cos_2sigma_m**2))
-        t -= (B/6)*cos_2sigma_m*(-3 + 4*sin_sigma**2)*(-3 + 4*cos_2sigma_m**2)
-        delta_sigma = B * sin_sigma * t
-        s = b*A*(sigma - delta_sigma)
+    u2 = cos_sq_alpha*((a**2 - b**2)/b**2)
+    A  = 1 + (u2/16384)*(4096 + u2*(-768+u2*(320 - 175*u2)))
+    B  = (u2/1024)*(256 + u2*(-128 + u2*(74 - 47*u2)))
+    t  = cos_2sigma_m + 0.25*B*(cos_sigma*(-1 + 2*cos_2sigma_m**2))
+    t -= (B/6)*cos_2sigma_m*(-3 + 4*sin_sigma**2)*(-3 + 4*cos_2sigma_m**2)
+    delta_sigma = B * sin_sigma * t
+    s = b*A*(sigma - delta_sigma)
 
-        return s
+    return s
 
 
-@jit
+# @jit
 def lon_lat_angle( lon1,lat1,lon2,lat2,deg=False,return_trig = False ):
     """
     #LAT_LON_ANGLE finds the geodesic angle from point 1 to point 2 
@@ -1044,55 +1436,57 @@ def lon_lat_angle( lon1,lat1,lon2,lat2,deg=False,return_trig = False ):
     #   angle.
     """
     if np.isnan([lon1,lat1,lon2,lat2]).any():
-        if return_trig: return np.nan, np.nan
-        else: return np.nan
-    else:
-        if deg:
-            lon1 = np.deg2rad(lon1)
-            lat1 = np.deg2rad(lat1)
-            lon2 = np.deg2rad(lon2)
-            lat2 = np.deg2rad(lat2)
-
-        C_lat=np.cos(lat2);
-        S_lat=np.sin(lat2);
-        C_lon=np.cos(lon2);
-        S_lon=np.sin(lon2);
-
-        C_1=np.cos(-lon1);
-        S_1=np.sin(-lon1);
-        C_2=np.cos(-lat1);
-        S_2=np.sin(-lat1);
-
-        A1=[[C_1, -S_1, 0],
-            [S_1,  C_1, 0],
-            [0,    0,   1]]
-
-        A2=[[C_2, 0, -S_2],
-            [0,   1,  0  ],
-            [S_2, 0,  C_2]]
-
-        Borig=[C_lat*C_lon,
-               C_lat*S_lon,
-               S_lat      ];
-
-        B=np.matmul(A2,A1)
-        B=np.matmul(B,Borig)
-        # print(B)
-
-        if return_trig:
-            scale=np.hypot(B[1],B[2])
-
-            angle_sin=-B[1]/scale
-            angle_cos= B[2]/scale
-
-            return angle_cos, angle_sin
+        if  return_trig :
+            return np.nan, np.nan
         else:
-            angle=np.arctan2(-B[1],B[2])
+            return np.nan
+    if deg:
+        lon1 = np.deg2rad(lon1)
+        lat1 = np.deg2rad(lat1)
+        lon2 = np.deg2rad(lon2)
+        lat2 = np.deg2rad(lat2)
+    
+    C_lat=np.cos(lat2);
+    S_lat=np.sin(lat2);
+    C_lon=np.cos(lon2);
+    S_lon=np.sin(lon2);
+    
+    C_1=np.cos(-lon1);
+    S_1=np.sin(-lon1);
+    C_2=np.cos(-lat1);
+    S_2=np.sin(-lat1);
+    
+    A1=[[C_1, -S_1, 0],
+        [S_1,  C_1, 0],
+        [0,    0,   1]]
+    
+    A2=[[C_2, 0, -S_2],
+        [0,   1,  0  ],
+        [S_2, 0,  C_2]]
+    
+    Borig=[C_lat*C_lon,
+           C_lat*S_lon,
+           S_lat      ];
+    
+    B=np.matmul(A2,A1)
+    B=np.matmul(B,Borig)
+    # print(B)
+    
+    if return_trig:
+        scale=np.hypot(B[1],B[2])
+        
+        angle_sin=-B[1]/scale
+        angle_cos= B[2]/scale
 
-            return angle
+        return angle_cos, angle_sin
+    else:
+        angle=np.arctan2(-B[1],B[2])
+        
+        return angle
 
+    
 def nearest_xy(lon,lat,grid_set): 
-    x,y = np.unravel_index(np.argmin(
+    x,y = np.unravel_index(np.nanargmin(
         np.abs(grid_set.lons - lon) + 
         np.abs(grid_set.lats - lat)),
         np.shape(grid_set.lons))
@@ -1204,7 +1598,7 @@ class Gs2Gs:
     feed it two grid_sets and it'll be a function
     regridding from one grid_set to the other
     """
-    def __init__(self,gs_native,gs_new,vectors = False,vectors_plot = False):
+    def __init__(self,gs_native,gs_new,vectors = False,vectors_plot = False,NaN_avoid = False):
         """
         gs_native is the grid set the data is defined on
         gs_new is where you want it to go
@@ -1218,13 +1612,32 @@ class Gs2Gs:
         if self.vectors:
             self.vectors_plot = True
         xorig,yorig = gs_new.mplot(gs_native.lons,gs_native.lats)
+        self.NaN_avoid = NaN_avoid
+        if NaN_avoid:
+            self.NaN_mask  =  np.isfinite(xorig)
+            self.NaN_mask[xorig> 1e20] = False
+            self.NaN_mask[xorig<-1e20] = False
+            bcount = xorig.shape[0]*xorig.shape[1]-self.NaN_mask.sum()
+            print('Gs2Gs  input bad point avoidance found ',bcount)
+            xorig = xorig[self.NaN_mask]
+            yorig = yorig[self.NaN_mask]
         xyorig = np.vstack((xorig.ravel(),yorig.ravel())).T
         self.tri = Delaunay(xyorig)  # Compute the triangulation
         # destination mesh
         self.mesh_new = (gs_new.xpts,gs_new.ypts)
+        if NaN_avoid:
+            self.mesh_new_mask = np.isfinite(gs_new.xpts)
+            print('Gs2Gs output bad point avoidance found ',
+                  gs_new.m*gs_new.n - self.mesh_new_mask.sum())
+        else:
+            self.mesh_new_mask = np.ones_like(gs_new.xpts,dtype=bool)
         if vectors:
             # record the neccesary angles to de-rotate the input vectors 
             # and re-rotate the output vectors
+#             if self.NaN_avoid:
+#                 self.in_ang_c = gs_native.ang_c[self.NaN_mask]
+#                 self.in_ang_s = gs_native.ang_s[self.NaN_mask]
+#             else:
             self.in_ang_c = gs_native.ang_c
             self.in_ang_s = gs_native.ang_s
             self.out_ang_c = gs_new.ang_c
@@ -1247,17 +1660,27 @@ class Gs2Gs:
         feed it the array defined on gs_native
         out pops a new array on gs_new
         """
+#         from scipy.interpolate import RegularGridInterpolator
         from scipy.interpolate import LinearNDInterpolator
         from scipy.interpolate import NearestNDInterpolator
         from scipy.interpolate import CloughTocher2DInterpolator
         # define the function
+        if self.NaN_avoid:
+            arr = arr[self.NaN_mask]
+#         if method == 'regular':
+#             interpolator = RegularGridInterpolator(self.tri, arr.ravel())
         if method == 'linear':
             interpolator = LinearNDInterpolator(self.tri, arr.ravel())
         elif method == 'nearest':
             interpolator = NearestNDInterpolator(self.tri, arr.ravel())
         elif method == 'cubic':
             interpolator = CloughTocher2DInterpolator(self.tri, arr.ravel())
-        return interpolator(self.mesh_new)
+#         test = interpolator((0, 0))
+        arrout_points =  interpolator((self.mesh_new[0][self.mesh_new_mask],
+                                       self.mesh_new[1][self.mesh_new_mask]))
+        arrout = np.ones_like(self.mesh_new_mask)*np.nan
+        arrout[self.mesh_new_mask] = arrout_points
+        return arrout
 
 
     def rg_vecs_to_plot(self,x,y,method='linear'):
@@ -1266,9 +1689,6 @@ class Gs2Gs:
         feed it the x,y comps defined on gs_native
         out pops new arrays on gs_new
         """
-        from scipy.interpolate import LinearNDInterpolator
-        from scipy.interpolate import NearestNDInterpolator
-        from scipy.interpolate import CloughTocher2DInterpolator
         if self.vectors_plot:
             # de-rotate the input vecs (back to lon lat square)
             xr = -y*self.in_ang_c - x*self.in_ang_s
@@ -1276,23 +1696,8 @@ class Gs2Gs:
 #             xr = x*self.in_ang_c - y*self.in_ang_s
 #             yr = y*self.in_ang_c + x*self.in_ang_s
             # define the function
-            if method == 'linear':
-                interpolator = LinearNDInterpolator(self.tri, xr.ravel())
-            elif method == 'nearest':
-                interpolator = NearestNDInterpolator(self.tri, xr.ravel())
-            elif method == 'cubic':
-                interpolator = CloughTocher2DInterpolator(self.tri, xr.ravel())
-            # use it
-            xrr = interpolator(self.mesh_new)
-            # define the function
-            if method == 'linear':
-                interpolator = LinearNDInterpolator(self.tri, yr.ravel())
-            elif method == 'nearest':
-                interpolator = NearestNDInterpolator(self.tri, yr.ravel())
-            elif method == 'cubic':
-                interpolator = CloughTocher2DInterpolator(self.tri, yr.ravel())
-            # use it
-            yrr = interpolator(self.mesh_new)
+            xrr = self.rg_array(xr,method = method)
+            yrr = self.rg_array(yr,method = method)
             return self.new_mplot.rotate_vector(xrr,yrr,
                       self.new_lons,self.new_lats)
         else:
@@ -1303,7 +1708,7 @@ class Gs2Gs:
         """
         the regridding function
         feed it the x,y comps defined on gs_native
-        out pops a new array on gs_new
+        out pops two new arrays on gs_new
         """
         from scipy.interpolate import LinearNDInterpolator
         from scipy.interpolate import NearestNDInterpolator
@@ -1314,27 +1719,28 @@ class Gs2Gs:
             yr =  x*self.in_ang_c - y*self.in_ang_s
 #             xr = x*self.in_ang_c - y*self.in_ang_s
 #             yr = y*self.in_ang_c + x*self.in_ang_s
-            # define the function
-            if method == 'linear':
-                interpolator = LinearNDInterpolator(self.tri, xr.ravel())
-            elif method == 'nearest':
-                interpolator = NearestNDInterpolator(self.tri, xr.ravel())
-            elif method == 'cubic':
-                interpolator = CloughTocher2DInterpolator(self.tri, xr.ravel())
-            # use it
-            xrr = interpolator(self.mesh_new)
-            # define the function
-            if method == 'linear':
-                interpolator = LinearNDInterpolator(self.tri, yr.ravel())
-            elif method == 'nearest':
-                interpolator = NearestNDInterpolator(self.tri, yr.ravel())
-            elif method == 'cubic':
-                interpolator = CloughTocher2DInterpolator(self.tri, yr.ravel())
-            # use it
-            yrr = interpolator(self.mesh_new)
+            xrr = self.rg_array(xr,method = method)
+            yrr = self.rg_array(yr,method = method)
+#             if method == 'linear':
+#                 interpolator = LinearNDInterpolator(self.tri, xr.ravel())
+#             elif method == 'nearest':
+#                 interpolator = NearestNDInterpolator(self.tri, xr.ravel())
+#             elif method == 'cubic':
+#                 interpolator = CloughTocher2DInterpolator(self.tri, xr.ravel())
+#             # use it
+#             xrr = interpolator(self.mesh_new)
+#             # define the function
+#             if method == 'linear':
+#                 interpolator = LinearNDInterpolator(self.tri, yr.ravel())
+#             elif method == 'nearest':
+#                 interpolator = NearestNDInterpolator(self.tri, yr.ravel())
+#             elif method == 'cubic':
+#                 interpolator = CloughTocher2DInterpolator(self.tri, yr.ravel())
+#             # use it
+#             yrr = interpolator(self.mesh_new)
             
-            xrout = -yrr*self.out_ang_c + xrr*self.out_ang_s
-            yrout =  xrr*self.out_ang_c + yrr*self.out_ang_s
+            xrout =  yrr*self.out_ang_c - xrr*self.out_ang_s
+            yrout = -xrr*self.out_ang_c - yrr*self.out_ang_s
             return xrout, yrout
         else:
             print('Gs2Gs not defined for vectors, re-initialise')
@@ -1355,8 +1761,12 @@ class vary_smooth2d():
     varr: array of local row smoothing distances (no. of grid cells, float)
     varc: array of local column smoothing distancese (no. of grid cells, float)
     """
-    def __init__(self,varr,varc,verbos = False):
+    def __init__(self,varr,varc,in_mask=False,verbos = False):
         ii,jj = varc.shape
+        if type(in_mask) == bool:
+            mask = np.ones([ii,jj],dtype = bool)
+        else:
+            mask = in_mask
         if verbos:
             print('Bulding vary smoother, av cell dist = ['+
                   '{:0.1f}'.format(np.nanmean(varr))+', '+ 
@@ -1380,27 +1790,29 @@ class vary_smooth2d():
         for i in range(ii):
             for j in range(jj):
                 ## i,j are the target indicies
+                if mask[i,j] == False: continue
                 ij = np.ravel_multi_index((i,j),(ii,jj))
                 ## i+-varr[i,j]
                 ## j+-varc[i,j]
                 ## are the target indice
                 ## place in the sparse matrix is np.ravel_multi_index((i,j))
                 vij = []
-                for vi in range(i-varr[i,j],i+varr[i,j]+1):
-                    for vj in range(j-varc[i,j],j+varc[i,j]+1):
-                        if (vi in range(ii)) and (vj in range(jj)):
+                vir = range( max(i-varr[i,j], 0), min(i+varr[i,j]+1, ii) )
+                vjr = range( max(j-varc[i,j], 0), min(j+varc[i,j]+1, jj) )
+                for vi in vir:
+                    for vj in vjr:
+                        if mask[vi,vj]:
                             vij.append(np.ravel_multi_index((vi,vj),(ii,jj)))
                 ## here is point for making a different kernel
                 ## current is box
                 weight = 1/np.shape(vij)[0]
-        #         if np.shape(vij)[0] > 1: print(weight)
-                for n,vv in enumerate(vij):
+                for vv in vij:
                     ijl.append(ij)
                     vvl.append(vv)
                     ddl.append(weight)
         if verbos: print("Smooth martix, entries = "+str(len(ijl))
-                        +", mean weights = "+'{:0.2f}'.format(np.nanmean(ddl)))
-        mat1 = sparse.coo_matrix((ddl, (ijl, vvl)))
+                        +", mean weights = "+'{:0.4f}'.format(np.nanmean(ddl)))
+        mat1 = sparse.coo_matrix((ddl, (ijl, vvl)),shape=(ii*jj,ii*jj))
         self.matrix = mat1.tocsr()
         #             matrix[vv,ij] = weight
         #             if vv!=ij:print(vv,ij)
@@ -1432,10 +1844,14 @@ class geo_vary_smooth():
         init distance is the approximate distance we want represented 
         by the local box dimensions
     """
-    def __init__(self,grid_set,distance,verbos=False):
+    def __init__(self,grid_set,distance,verbos=False,in_mask=False):
         varr = distance/grid_set.xdist
         varc = distance/grid_set.ydist
-        self.Vsm2d = vary_smooth2d(varr,varc,verbos=verbos)
+        if type(in_mask) == bool and in_mask:
+            in_mask = np.isfinite(grid_set.mask)
+        else:
+            in_mask = in_mask
+        self.Vsm2d = vary_smooth2d(varr,varc,verbos=verbos,in_mask=in_mask)
     
     def smooth(self,array):
         return self.Vsm2d.smooth(array)

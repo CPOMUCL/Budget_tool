@@ -10,9 +10,8 @@
 import numpy as np
 import datetime as dt
 import copy
-from scipy import stats
 from dateutil.relativedelta import relativedelta
-from mpl_toolkits.basemap import Basemap
+# from mpl_toolkits.basemap import Basemap
 from netCDF4 import Dataset
 
 
@@ -59,7 +58,7 @@ class data_year:
         elif periods < 12:
             for tt in range(self.n_t):
                 yr = self.dates[tt].year - self.dates[0].year
-                mt = int(self.dates[tt].month*periods/12) - 1
+                mt = int((self.dates[tt].month-1)*periods/12)
     #             print(yr,mt,tt)
                 self.yrpd[yr,mt] = tt
         elif periods > 12:
@@ -73,6 +72,7 @@ class data_year:
                 self.yrpd[yr,mt] = tt
         self.yrpd.mask = self.yrpd < 0
         self.files = True
+        self.years = [self.dates[0].year + n for n in range(self.yrpd.shape[0])]
         
 #     def resize(t=[0,0],m=[0,0],n=[0,0]):
 #         """
@@ -125,10 +125,35 @@ class data_year:
                     return np.arange(y1,y2+1)
             else:
                 return np.arange(0,self.periods)
-        
+
+    
+    def get_years_index(self,years):
+        """
+        Finds the year index to access the correct row of the yrpd attribute
+        Checks to see if the years in question are available
+
+        Parameters
+        ---------
+
+        years: list[int] the actual years we find the indexs for 
+            typically [2010,2011,2014] for example
+
+        Returns
+        -------
+        year_indexs: the access indexes for the years in question for the yrpd attribute
+            typically [1,2,5] for example
+
+        """
+        year0 = self.dates[0].year
+        years = [y for y in years if y>= year0]
+        return [y-year0 for y in years if y-year0 < self.nyrs]
 
     def __getitem__(self,indx):
-        if (type(indx) == int) or (type(indx) == np.int64) or (type(indx) == slice):
+        if type(indx) == dt.datetime:
+            t_p = self.get_index(indx)
+            m = slice(None)
+            n = slice(None)
+        elif (type(indx) == int) or (type(indx) == np.int64) or (type(indx) == slice):
             t_p = indx
             m = slice(None)
             n = slice(None)
@@ -146,6 +171,9 @@ class data_year:
         if type(temp) == np.ndarray:
             temp[temp_mask==False] = np.nan
             return temp
+        elif type(temp) == np.ma.core.MaskedArray:
+            temp[temp_mask==False] = np.nan
+            return temp
         elif temp_mask:
             return temp
         else:
@@ -158,6 +186,8 @@ class data_year:
         otherwise it is 'auto'
         year_only = true overides everything and just gives the year
         """
+        if type(t) == np.ma.core.MaskedConstant:
+            return ''
         # simply get a date string for a time point
         if year_only: # year_only overides
             str_option = '%Y'
@@ -354,47 +384,114 @@ class data_year:
         self.yrpd.mask = self.yrpd < 0
         print("New data_year, size "+str(self.n_t)+", for "+str(self.nyrs)+" years")
 
-    def mean_series(self,mask = False,year_set = [],time_set = [],method='mean',mult_array=False):
+    def mean_series(self,periods=[],mask = False,year_set = [],time_set = [],year_form = 'index', method='mean',mult_array=False,year_select=None,moving_av = False,):
+        """
+        Cash in on making the effort to organise your yearly gridded data correcty.
+        We can select the years and periods of interest and get back a full time series of tht data plus the dates they are defined on. The method for collecting this data can be mean, median, std and sum.
+        
+        Parameters
+        -------
+        periods: list or np.array, 1d, ints, the periods we are interested. Default is all the periods. If we are only interested in the januarys for a month data_year, we set periods = [0]
+        mask: logical, this will only select data from cell within the data_year.mask array if set
+        year_set: list or tuple, year limit numbers [year_start_index, year_end_index], inclusive
+            default value of [] gives all years
+            yeat_set = [n,n] will consider the year of index n only
+        
+        time_set: list or tuple, time limit numbers [time_start_index, time_end_index], inclusive
+            default value of [] allows all time points to be considered
+            time_set = [1,37] will consider the data from data array with time index between 1,37 inclusive.
+        method: string, the data combinining method to turn seleected data into a map.
+            default = 'mean' uses np.nanmean
+             'median' uses np.nanmedian
+             'std' uses np.nanstd
+             'sum' uses np.nansum
+             'yearsum' uses np.nansum
+                 note that yearsum method divides result by number of years selected
+                 this result can be dodgy if there are empty years of data selected
+        mult_array: option, default = False, applies a constant scaling array to the data_year data slices before processing. For example multiply your arrays by a grid area array whilst calculating the sum. Very powerful
+        moving_av: collect a moving average of the data for smoothing, 
+            default = False, set to an int, to create a mving average of this many years.
+        Returns
+        -------
+        dlist: list, full of date_time.date_time, size (tn)
+        numpy.array: a time series Size (tn) where tn very much depends on the options, with max of data_year.n_t
+        """
+        if year_form == 'year':
+            if len(time_set) == 2:
+                time_set = self.get_index(time_set[0],time_set[1])
+            if len(year_set) == 2:
+                year_set = self.get_years_index(year_set)
+        mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
+        if np.shape(periods)[0] == 0:
+            periods = np.arange(0,self.periods)
+        # using all periods within yrpd including empty
+#         out_list = []
+        d_list = []
+        dprev = self.dates[0]
+        if year_select is not None:
+            year_use = [y for y in year_select if (y>=y0 and y<=yE)]
+        else:
+            year_use = [y for y in range(y0,yE+1)]
+        indx = self.yrpd[year_use][:,periods].compressed()
+        indx = indx[np.logical_and(indx>=t0,indx<=tE)]
+        if type(mult_array) == np.ndarray:
+            temp = self.data[indx]*mult_array[None,:,:]
+        else:
+            temp = self.data[indx]
+        temp[mask[indx]==False] = np.nan
+        if method=='mean':
+            out_list = np.nanmean(temp,axis=(1,2))
+        if method=='median':
+            out_list = np.nanmedian(temp,axis=(1,2))
+        if method=='std':
+            out_list = np.nanstd(temp,axis=(1,2))
+        if method=='sum':
+            out_list = np.nansum(temp,axis=(1,2))
+        d_list = [self.dates[di] for di in indx]
+        
+#         for y in year_use:
+#             for p in periods:
+#                 if self.yrpd[y,p]>=t0 and self.yrpd[y,p]<=tE:
+#                     if self.yrpd.mask[y,p]:
+#                         out_list.append(np.nan)
+#                         d_list.append(dprev)
+#                     else:
+#                         tp = self.yrpd[y,p]
+#                         temp = self.data[tp].copy()
+#                         temp[mask[tp]==False] = np.nan
+#                         if type(mult_array) == np.ndarray:
+#                             temp = temp*mult_array
+#                         if method=='mean':
+#                             out_list.append(np.nanmean(temp))
+#                         if method=='median':
+#                             out_list.append(np.nanmedian(temp))
+#                         if method=='std':
+#                             out_list.append(np.nanstd(temp))
+#                         if method=='sum':
+#                             out_list.append(np.nansum(temp))
+#                         d_list.append(self.dates[tp])
+#                         dprev = self.dates[tp]
+        if type(moving_av) == bool:
+            return d_list, out_list.tolist()
+        else:
+            N = moving_av
+            temp_padded = np.pad(np.array(out_list), 
+                                 (N//2, N-1-N//2), mode='edge')
+            temp_array = np.convolve(temp_padded, 
+                                     np.ones((N,))/N, mode='valid')
+            return d_list, temp_array.tolist()
+
+
+    def centile_series(self,centiles,mask = False,year_set = [],time_set = [],year_form = 'index',method='mean',mult_array=False):
         """
         Mask needs to be 1 for true 0 for false
         """
         # check if there's data here already
-        if self.files:
-            mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
-            
-            # using all periods within yrpd including empty
-            out_list = []
-            d_list = []
-            dprev = self.dates[0]
-            for y in range(y0,yE+1):
-                for p in range(self.periods):
-                    if self.yrpd.mask[y,p]:
-                        out_list.append(np.nan)
-                        d_list.append(dprev)
-                    else:
-                        tp = self.yrpd[y,p]
-                        temp = self.data[tp]
-                        temp[mask[tp]==False] = np.nan
-                        if type(mult_array) == np.ndarray:
-                            temp = temp*mult_array
-                        if method=='mean':
-                            out_list.append(np.nanmean(temp))
-                        if method=='median':
-                            out_list.append(np.nanmedian(temp))
-                        if method=='std':
-                            out_list.append(np.nanstd(temp))
-                        if method=='sum':
-                            out_list.append(np.nansum(temp))
-                        d_list.append(self.dates[tp])
-                        dprev = self.dates[tp]
-        return d_list, out_list
-
-
-    def centile_series(self,centiles,mask = False,year_set = [],time_set = [],method='mean',mult_array=False):
-        """
-        Mask needs to be 1 for true 0 for false
-        """
-        # check if there's data here already
+        if year_form == 'year':
+            if len(time_set) == 2:
+                time_set = self.get_index(time_set[0],time_set[1])
+            if len(year_set) == 2:
+                year_set = self.get_years_index(year_set)
         if self.files:
             mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
             
@@ -419,12 +516,48 @@ class data_year:
         return d_list, out_list
 
 
-    def clim_mean(self,mask = False,year_set = [],time_set = [],method='mean',
+    def clim_mean(self,mask = False,year_set = [],time_set = [],year_form = 'index',method='mean',
                   moving_av = False,full_time=False,mult_array=False,first_p = 0):
         """
-        Mask needs to be 1 for true 0 for false
-        """
+        This is the money method, cash in on making the effort to organise your yearly gridded data correcty.
+        We can select the years and periods of interest and get back a map of that data. The method for collecting this data can be mean, median, std and sum.
+        
+        Parameters
+        -------
+        mask: logical, this will only select data from cell within the data_year.mask array if set
+        year_set: list or tuple, year limit numbers [year_start_index, year_end_index], inclusive
+            default value of [] gives all years
+            yeat_set = [n,n] will consider the year of index n only
+            
+        year_select: list of year indexes, only these years included.
+            default value of [] gives all years
+            yeat_set = [1,2,4,5] will consider the years with index [1,2,4,5] only
+        
+        time_set: list or tuple, time limit numbers [time_start_index, time_end_index], inclusive
+            default value of [] allows all time points to be considered
+            time_set = [1,37] will consider the data from data array with time index between 1,37 inclusive.
+        method: string, the data combinining method to turn seleected data into a map.
+            default = 'mean' uses np.nanmean
+             'median' uses np.nanmedian
+             'std' uses np.nanstd
+             'sum' uses np.nansum
+             'yearsum' uses np.nansum
+                 note that yearsum method divides result by number of years selected
+                 this result can be dodgy if there are empty years of data selected
+        full_time: option, default = False, makes the method return a value for all periods even if that period never has data. Empty periods have a value of np.nan
+        moving_av: option, default = False, applies a moving average to resultant series. Implemented for noisey daily data. setting moving_av =  5 makes a 5 window moving average. Uses a combo of numpy.pad and numpy.convolve to create a even box moving average
+        mult_array: option, default = False, applies a constant scaling array to the data_year data slices before processing. For example multiply your arrays by a grid area array whilst calculating the sum. Very powerful
+        first_p: option, default = 0, first period point of the year. Setting this to be an integer other than one shifts the end reusult by that many points, cyclicly. Useful if you wish to present a seasonal cycle that doesn't start on the first day of the year, October to September the following year for example.
+        Returns
+        -------
+        numpy.array, a time series Size (tn) where tn very much depends on the options, but tends to be equal to data_year.periods
+        """ 
         # check if there's data here already
+        if year_form == 'year':
+            if len(time_set) == 2:
+                time_set = self.get_index(time_set[0],time_set[1])
+            if len(year_set) == 2:
+                year_set = self.get_years_index(year_set)
         if self.files:
             mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
             
@@ -443,6 +576,7 @@ class data_year:
                         ploc.append(None)
             temp_array = np.empty([p_use])
             pind=0
+            p_count = np.empty([p_use])
             for mn,t in enumerate(pmask):
                 if t:
 #             for mn in range(self.periods):
@@ -456,8 +590,11 @@ class data_year:
                         temp_mask = np.empty([t_mn,self.m,self.n],dtype=bool)
                         if type(mult_array) == np.ndarray:
                             temp[:,:,:]      = [self.data[i]*mult_array for i in idx if i>=t0 and i<=tE]
+#                             temp[:,:,:]      = self.data[idx]*mult_array[None,:,:]
                         else:
                             temp[:,:,:]      = [self.data[i] for i in idx if i>=t0 and i<=tE]
+#                             temp[:,:,:]      = self.data[idx]
+                        p_count[pind] = np.sum([1 for i in idx if i>=t0 and i<=tE])
                         temp_mask[:,:,:] = [mask[i] for i in idx if i>=t0 and i<=tE]
                         temp[temp_mask==False] = np.nan
                         if method=='mean':
@@ -466,9 +603,12 @@ class data_year:
                             temp_array[pind] = np.nanmedian(temp)
                         elif method=='std':
                             temp_array[pind] = np.nanstd(temp)
-                        elif method=='sum':
+                        elif (method=='ysum' or method=='sum'):
                             temp_array[pind] = np.nansum(temp)
                         pind+=1
+            if method=='ysum':
+                ### then we need to normalize by no.of time points
+                temp_array = temp_array/p_count
             if full_time:
                 out_array = []
                 for p in ploc:
@@ -494,11 +634,17 @@ class data_year:
                     return temp_array
 
         
-    def clim_centile(self,centiles,mask = False,year_set = [],time_set = [],method='mean',mult_array=False,first_p = 0):
+    def clim_centile(self,centiles,mask = False,year_set = [],time_set = [],year_form = 'index',method='mean',mult_array=False,first_p = 0):
+        
         """
         Mask needs to be 1 for true 0 for false
         """
         # check if there's data here already
+        if year_form == 'year':
+            if len(time_set) == 2:
+                time_set = self.get_index(time_set[0],time_set[1])
+            if len(year_set) == 2:
+                year_set = self.get_years_index(year_set)
         if self.files:
             mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
             
@@ -547,50 +693,259 @@ class data_year:
 
 
 
-    def clim_map(self,periods=[],mask = False,year_set = [],time_set = []):
+    def clim_map(self,periods=[],mask = False,year_set = [],year_select=None,time_set = [],year_form = 'index',method = 'mean',calc_mask = False):
         """
-        periods is the list of period no.s to use in the map
-        ie. periods = [0,1,2] with give the map of average over
-        the first three months of a monthly data_year
-        """ 
-        # check if there's data here already
-        if self.files:
-            mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
-            if len(periods) == 0: periods = np.arange(0,self.periods)
-            idx = [self.yrpd[y0:yE+1,mn].compressed() for mn in periods]
-            temp_mask = np.sum([mask[j,:,:]
-                            for i in idx for j in i if j>=t0 and j<=tE],axis = 0)
-            temp = np.nanmean(
-            [self.data[j] for i in idx for j in i if j>=t0 and j<=tE],
-            axis = 0)
-            temp[temp_mask==False] = np.nan
-            return temp
+        This is the money method, cash in on making the effort to organise your yearly gridded data correcty.
+        We can select the years and periods of interest and get back a map of that data. The method for collecting this data can be mean, median, std and sum.
         
-    def centile_map(self,centile,periods=[],mask = False,year_set = [],time_set = []):
-        """
-        centile is the centiles you're interested in, ie. 50th, 90th
-        periods is the list of period no.s to use in the map
+        Parameters
+        -------
+        periods: list or numpy.array (1d) of integers
+            periods is the list of period no.s to use in the map
         ie. periods = [0,1,2] with give the map of average over
         the first three months of a monthly data_year
+            default value is [], which will give all periods
+        
+        mask: logical, this will only select data from cell within the data_year.mask array if set
+            note this will consider all data which is unmasked from any of the data time points considered
+            default value mask = False, unmasked
+        calc_mask: logical, this will only select data from cells within the data_year.mask array if set
+            note this will only select data unmasked the data time points considered. This result can well be different to the mask option if the data mask is highly variable.
+            default value calc_mask = False, unmasked
+        year_set: list or tuple, year limit numbers [year_start_index, year_end_index], inclusive
+            default value of [] gives all years
+            yeat_set = [n,n] will consider the year of index n only
+            
+        year_select: list of year indexes, only these years included.
+            default value of [] gives all years
+            yeat_set = [1,2,4,5] will consider the years with index [1,2,4,5] only
+        
+        time_set: list or tuple, time limit numbers [time_start_index, time_end_index], inclusive
+            default value of [] allows all time points to be considered
+            time_set = [1,37] will consider the data from data array with time index between 1,37 inclusive.
+        method: string, the data combinining method to turn seleected data into a map.
+            default = 'mean' uses np.nanmean
+             'median' uses np.nanmedian
+             'std' uses np.nanstd
+             'sum' uses np.nansum
+             'yearsum' uses np.nansum
+                 note that yearsum method divides result by number of years selected
+                 this result can be dodgy if there are empty years of data selected
+                
+        Returns
+        -------
+        numpy.array, the map. Size (data_year.m, data_year.n)
         """ 
-        # check if there's data here already
-        if self.files:
-            mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
+        if year_form == 'year':
+            if len(time_set) == 2:
+                time_set = self.get_index(time_set[0],time_set[1])
+            if len(year_set) == 2:
+                year_set = self.get_years_index(year_set)
+        mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
+        if year_select is not None:
+            year_select = [y for y in year_select if (y>=y0 and y<=yE)]
+            idx = [[self.yrpd[y,mn] for mn in periods for y in year_select
+                             if not self.yrpd.mask[y,mn]]]
+            if method == 'ysum':
+                ysum = len(year_select)
+            else:
+                ysum  = 1.0
+        else:
             if len(periods) == 0: periods = np.arange(0,self.periods)
             idx = [self.yrpd[y0:yE+1,mn].compressed() for mn in periods]
-            temp_mask = np.sum([mask[j,:,:]
-                            for i in idx for j in i if j>=t0 and j<=tE],axis = 0)
+            if method == 'ysum':
+                ysum = yE - y0 +1
+            else:
+                ysum  = 1.0
+        temp_mask = np.sum([mask[j,:,:]
+                        for i in idx for j in i if j>=t0 and j<=tE],axis = 0)
+        if method=='mean' and calc_mask:
+            temp = np.nanmean([self[j] for i in idx for j in i if j>=t0 and j<=tE],axis = 0)
+        elif method=='mean':
+            temp = np.nanmean([self.data[j] for i in idx for j in i if j>=t0 and j<=tE],axis = 0)
+        elif method=='median' and calc_mask:
+            temp = np.nanmedian([self[j] for i in idx for j in i if j>=t0 and j<=tE],axis = 0)
+        elif method=='median':
+            temp = np.nanmedian([self.data[j] for i in idx for j in i if j>=t0 and j<=tE],axis = 0)
+        elif method=='std' and calc_mask:
+            temp = np.nanstd([self[j] for i in idx for j in i if j>=t0 and j<=tE],axis = 0)
+        elif method=='std':
+            temp = np.nanstd([self.data[j] for i in idx for j in i if j>=t0 and j<=tE],axis = 0)
+        elif (method=='sum' or method=='ysum') and calc_mask:
+            temp = np.nansum([self[j] for i in idx for j in i if j>=t0 and j<=tE],axis = 0)/ysum
+        elif (method=='sum' or method=='ysum'):
+            temp = np.nansum([self.data[j] for i in idx for j in i if j>=t0 and j<=tE],axis = 0)/ysum
+        if np.sum(temp_mask<1)>1:
+            temp[np.where(temp_mask<1)] = np.nan
+        return temp
+
+    def centile_map(self,centile,periods=[],mask = False,year_set = [],year_select=None,time_set = [],year_form = 'index',calc_mask = False):
+        """
+        This is the money method, cash in on making the effort to organise your yearly gridded data correcty.
+        We can select the years and periods of interest and get back a map of that data. 
+        
+        centile is the centiles you're interested in, ie. 50th, 90th, this takes a single number currently
+        
+        Parameters
+        -------
+        periods: list or numpy.array (1d) of integers
+            periods is the list of period no.s to use in the map
+        ie. periods = [0,1,2] with give the map of average over
+        the first three months of a monthly data_year
+            default value is [], which will give all periods
+        
+        mask: logical, this will only select data from cell within the data_year.mask array if set
+            note this will consider all data which is unmasked from any of the data time points considered
+            default value mask = False, unmasked
+        calc_mask: logical, this will only select data from cells within the data_year.mask array if set
+            note this will only select data unmasked the data time points considered. This result can well be different to the mask option if the data mask is highly variable.
+            default value calc_mask = False, unmasked
+        year_set: list or tuple, year limit numbers [year_start_index, year_end_index], inclusive
+            default value of [] gives all years
+            yeat_set = [n,n] will consider the year of index n only
+            
+        year_select: list of year indexes, only these years included.
+            default value of [] gives all years
+            yeat_set = [1,2,4,5] will consider the years with index [1,2,4,5] only
+        
+        time_set: list or tuple, time limit numbers [time_start_index, time_end_index], inclusive
+            default value of [] allows all time points to be considered
+            time_set = [1,37] will consider the data from data array with time index between 1,37 inclusive.
+                
+        Returns
+        -------
+        numpy.array, the map. Size (data_year.m, data_year.n)
+        """ 
+        if year_form == 'year':
+            if len(time_set) == 2:
+                time_set = self.get_index(time_set[0],time_set[1])
+            if len(year_set) == 2:
+                year_set = self.get_years_index(year_set)
+        mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
+        if year_select is not None:
+            year_select = [y for y in year_select if (y>=y0 and y<=yE)]
+            idx = [[self.yrpd[y,mn] for mn in periods for y in year_select
+                             if not self.yrpd.mask[y,mn]]]
+        else:
+            if len(periods) == 0: periods = np.arange(0,self.periods)
+            idx = [self.yrpd[y0:yE+1,mn].compressed() for mn in periods]
+        temp_mask = np.sum([mask[j,:,:]
+                        for i in idx for j in i if j>=t0 and j<=tE],axis = 0)
+        if calc_mask:
             temp = np.nanpercentile(
-            [self.data[j] for i in idx for j in i if j>=t0 and j<=tE],
+                [self[j] for i in idx for j in i if j>=t0 and j<=tE],
                 centile,axis = 0)
-            temp[temp_mask==False] = np.nan
-            return temp    
+        else:
+            temp = np.nanpercentile(
+                [self.data[j] for i in idx for j in i if j>=t0 and j<=tE],
+                centile,axis = 0)
+        temp[temp_mask==False] = np.nan
+        return temp    
+
+
+    def trend_map(self,p,mask = False,year_set = [],year_select=None,time_set = [],year_form = 'index',calc_mask = False,return_detrended=False,t_axis = 'year',t_vec_min = 2,verbos=False):
+        """
+        This is the money method, cash in on making the effort to organise your yearly gridded data correcty.
+        We can select the years and periods of interest and get back linear trend of that data map
+        Adapted from code by W. Gregory
         
-    def year_centile(self,centiles,periods=[],mask = False,year_set = [],time_set = [],mult_array=False):
+        -------
+        period: single integer
+            periods is the list of period no.s to use in the map
+        ie. periods = [0,1,2] with give the map of average over
+        the first three months of a monthly data_year
+            default value is [], which will give all periods
+        
+        mask: logical, this will only select data from cell within the data_year.mask array if set
+            note this will consider all data which is unmasked from any of the data time points considered
+            default value mask = False, unmasked
+        calc_mask: logical, this will only select data from cells within the data_year.mask array if set
+            note this will only select data unmasked the data time points considered. This result can well be different to the mask option if the data mask is highly variable.
+            default value calc_mask = False, unmasked
+        year_set: list or tuple, year limit numbers [year_start_index, year_end_index], inclusive
+            default value of [] gives all years
+            yeat_set = [n,n] will consider the year of index n only
+        time_set: list or tuple, time limit numbers [time_start_index, time_end_index], inclusive
+            default value of [] allows all time points to be considered
+            time_set = [1,37] will consider the data from data array with time index between 1,37 inclusive.
+        t_axis - the xaxis we're computing the trend for. Default is year (only option)
+        t_vec_min - the minimum no of. time points we need to compute a trend. Default = 2
+                
+        Returns
+        -------
+        numpy.array, the trend map. Size (data_year.m, data_year.n)
+        if return_detrended = True
+        numpy.array, the trend map. Size (data_year.m, data_year.n)
+        numpy.array, the detrend data. Size (n_points,data_year.m, data_year.n), npoints depends on data limit options, max self.nyrs
+        list of datetimes, the date points of the slices of the detrended data, size n_points as before
+        """ 
+        import itertools
+        from scipy import stats
+        
+        if year_form == 'year':
+            if len(time_set) == 2:
+                time_set = self.get_index(time_set[0],time_set[1])
+            if len(year_set) == 2:
+                year_set = self.get_years_index(year_set)
+        mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
+        if year_select is not None:
+            year_select = [y for y in year_select if (y>=y0 and y<=yE)]
+            idx = [self.yrpd[y,p] for y in year_select
+                             if not self.yrpd.mask[y,mn]]
+        else:
+            idx = self.yrpd[y0:yE+1,p].compressed()
+        trend = np.zeros((self.m,self.n,2))*np.nan
+        if return_detrended:
+            detrended = np.zeros((len(idx),self.m,self.n))*np.nan
+            dtvec = [self.dates[d] for d in idx],
+        if verbos:
+            count_apr = int(np.sum(np.nanmean(self.mask[idx],axis=0)))
+            tr_no = 1
+            print('Appox. '+str(count_apr)+' trend points to calculate')
+            count_apr_o4 = int(count_apr/4)
+            verb_count = 0
+        if t_axis == 'year':
+            tvec  = np.array([self.dates[d].year for d in idx])
+        for i,j in itertools.product(range(self.m),range(self.n)):
+            if np.array([mask[ii,i,j] for ii in idx]).any():
+                if calc_mask:
+                    data_lr = np.array([self[d,i,j]      for d in idx])
+                else:
+                    data_lr = np.array([self.data[d,i,j] for d in idx])
+                dmsk = np.isfinite(data_lr)
+                if dmsk.sum()>2:
+                    tvec_use = tvec[dmsk]
+                    data_lr = data_lr[dmsk]
+                    trendT, interceptT, r_valsT, probT, stderrT =stats.linregress(
+                        tvec_use,data_lr)
+                    trend[i,j,0] = trendT
+                    trend[i,j,1] = interceptT
+                else:
+                    trend[i,j,0] = np.nan
+                    trend[i,j,1] = np.nan
+                if return_detrended:
+                    lineT = (trendT*tvec) + interceptT
+                    detrended[:,i,j]=data[:,i,j]-lineT
+                if verbos:
+                    if np.mod(tr_no,count_apr_o4) == 0:
+                        print('Update '+str(verb_count)+', point '+str(tr_no))
+                        verb_count += 1
+                    tr_no += 1
+        if return_detrended:
+            return trend,detrended,dtvec
+        else:
+            return trend
+
+    def year_centile(self,centiles,periods=[],mask = False,year_set = [],time_set = [],year_form = 'index',mult_array=False):
         """
         Similar to clim_centile method, but give it a list of periods and it will
         av over the periods and show how they change over the years
         """
+        if year_form == 'year':
+            if len(time_set) == 2:
+                time_set = self.get_index(time_set[0],time_set[1])
+            if len(year_set) == 2:
+                year_set = self.get_years_index(year_set)
         if self.files:
             mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
             if len(periods) == 0: periods = np.arange(0,self.periods)
@@ -614,11 +969,16 @@ class data_year:
         
 
         
-    def year_mean(self,periods=[],mask = False,year_set = [],time_set = [],method='mean',mult_array=False):
+    def year_mean(self,periods=[],mask = False,year_set = [],time_set = [],year_form = 'index',method='mean',mult_array=False):
         """
         Mask needs to be 1 for true 0 for false
         """
         # check if there's data here already
+        if year_form == 'year':
+            if len(time_set) == 2:
+                time_set = self.get_index(time_set[0],time_set[1])
+            if len(year_set) == 2:
+                year_set = self.get_years_index(year_set)
         if self.files:
             mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
             if len(periods) == 0: periods = np.arange(0,self.periods)
@@ -642,12 +1002,19 @@ class data_year:
                 elif method=='median':
                     temp_array[yy] = np.nanmedian(temp)
             return temp_array
+        
+    
 
-    def ravel(self,mask = False,remove_nan=False,periods=[],year_set = [],time_set = []):
+    def ravel(self,mask = False,remove_nan=False,periods=[],year_set = [],year_form = 'index',time_set = []):
         """
         Mask needs to be 1 for true 0 for false
         """
         # check if there's data here already
+        if year_form == 'year':
+            if len(time_set) == 2:
+                time_set = self.get_index(time_set[0],time_set[1])
+            if len(year_set) == 2:
+                year_set = self.get_years_index(year_set)
         if self.files:
             mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
             if len(periods) == 0: periods = np.arange(0,self.periods)
@@ -686,86 +1053,205 @@ class data_year:
                 DY_dates = temp_time)
             self.saved = True
 
-    def save_nc(self,filename,mask = False,grid = False,
+    def save_nc(self,filename,d0,data_attr, collect = 'all',tdim='days',save_mask = False,mask=False,
+                grid = None,grid_info=False,
                 extra_data = [],save_yrpd=False,add_attr=[],
                 description='default data_year ',data_name = 'dy_data',
-                      year_set = [],time_set = []):
+                      year_set = [],time_set = [],year_form = 'index',verbos=True):
         import grid_set as gs
         """saves all the DY in an netcdf file
         Works as default with the dy format, all data saved in a single array
-        use save_nc_slice for individual files per date
+        use the collect option for individual files per date, or per year
+        
+        parameters
+        ----------
+        filename: string, name of the written netCDF
+        
+        d0: datetime.datetime, time start point for the time dimension
+        
+        data_attr: dict: Attribute information for the variable. For example 
+                        {'Description':'data description extra blurb',
+                         'Units':'meters'}
         
         Options:
         description = 'whatever'
             writes a description
         data_name = 'whatever'
             changes the name of the main data variable
+        data_attr = ['att1_name','the attr']
+            the data needs info before you can write it to file
         add_attr = [['att1_name','the attr'],['att2_name','the attr'],.....]
             puts in attributes to the nc file
-        extra_data = [gs.grid_set,'label']
+        extra_data = [gs.grid_set,'label',attr(dict)]
             write another field to the nc file, gs must have identical dimensions
             'label' will be the name of filed in the nc_file
+        grid = grid_set.grid_set, add the lon and lat info for a grid_set class
+            defualt = False
+        grid_info = logical, adds additional gird spacing and orientation information 
+            from the grid_set.grid_set class
+            defualt = False
         """
+        if year_form == 'year':
+            if len(time_set) == 2:
+                time_set = self.get_index(time_set[0],time_set[1])
+            if len(year_set) == 2:
+                year_set = self.get_years_index(year_set)
         mask,y0,yE,t0,tE = get_range_mask(self,mask,year_set,time_set)
         
-        # build new yrpd
-        yrpd_cp = np.ma.empty([yE-y0+1,self.periods],dtype = int)
-        yrpd_cp[:,:] = self.yrpd[y0:yE+1,:]
-        yrpd_cp.mask[yrpd_cp>tE] = True
-        yrpd_cp.mask[yrpd_cp<t0] = True
-        t_use = yrpd_cp.compressed()
-        
-        temp_time = [self.dates[t].toordinal() for t in t_use]
-        NC_f = Dataset(filename, 'w', format='NETCDF4')
-        NC_f.description = description
-            
-        NC_f.createDimension('time', np.shape(t_use)[0])
-        NC_f.createDimension('x', self.m)
-        NC_f.createDimension('y', self.n)
-        NC_f.createDimension('periods', self.periods)
-        NC_f.createDimension('nyrs', np.shape(yrpd_cp)[0])
-            # to save:
-            # A,swh,t0
-        DY_data = NC_f.createVariable(data_name, 'f4', ('time','x','y'))
-        if type(self.mask)==np.ndarray:
-            DY_mask = NC_f.createVariable('mask', 'i1', ('time','x','y'))
-        DY_time = NC_f.createVariable('time', 'f4', ('time',))
-        if save_yrpd:
-            DY_yrpd = NC_f.createVariable('dy_yrpd', 'i8', ('nyrs','periods'))
-        e_d = []
-        for extra_d in extra_data:
-            e_d.append(NC_f.createVariable(extra_d[1], 'f4', ('time','x','y')))
-#         DY_yrpd_mask = NC_f.createVariable('dy_yrpd_mask', 'i1', ('nyrs','periods'))
+        if collect == 'all': ## SINGLE FILE - filename
+            short_file = filename.split('.nc')[0]
+            files = [short_file+'.nc']
+            y0use = [y0]
+            yEuse = [yE]
+            t0use = [t0]
+            tEuse = [tE]
+        elif collect == 'years': ### find all the years
+            ### we use the y0,yE options to force it
+            short_file = filename.split('.nc')[0]
+            y0use = [y for y in range(y0,yE+1)]
+            yEuse = [y for y in range(y0,yE+1)]
+            t0use = [t0]*((yE-y0)+1)
+            tEuse = [tE]*((yE-y0)+1)
+            ####
+            files = [short_file+'_'+str(self.years[y])+'.nc' 
+                      for y in range(y0,yE+1)]
+        elif collect == 'slice': ### find every slice
+            ### we use the t0,tE options to force it
+            short_file = filename.split('.nc')[0]
+            y0use = [y0]*((tE-t0)+1)
+            yEuse = [yE]*((tE-t0)+1)
+            t0use = [t for t in range(t0,tE+1)]
+            tEuse = [t for t in range(t0,tE+1)]
+            files = [short_file+self.dates[t].strftime('_%Y-%m-%d')+'.nc'
+                     for t in range(t0,tE+1)]
+        for t0,tE,y0,yE,file in zip(t0use,tEuse,y0use,yEuse,files):
+            # build new yrpd
+            yrpd_cp = np.ma.empty([yE-y0+1,self.periods],dtype = int)
+            yrpd_cp[:,:] = self.yrpd[y0:yE+1,:]
+            yrpd_cp.mask[:] = self.yrpd.mask[y0:yE+1,:]
+            yrpd_cp.mask[yrpd_cp>tE] = True
+            yrpd_cp.mask[yrpd_cp<t0] = True
+            t_use = yrpd_cp.compressed()
+            if len(t_use) == 0: continue
+            if tdim == 'days':
+                temp_time = [(self.dates[t] - d0).days for t in t_use]
+            if tdim == 'months':
+                temp_time = [(self.dates[t] - d0).months for t in t_use]
+    #             ydiff =d1.year-d0.year
+    #             d1.month-d0.month + ydiff*12
+            NC_f = Dataset(file, 'w', format='NETCDF4')
+            NC_f.description = description
 
-        # save a grid too
-        if type(grid) == gs.grid_set:
-            lons = NC_f.createVariable('lons', 'f4', ('x','y'))
-            lats = NC_f.createVariable('lats', 'f4', ('x','y'))
-        
-        # attributes
-        for att in add_attr:
-            NC_f.setncattr_string(att[0],att[1])
-        # Time format attribute
-        NC_f.setncattr_string('Time dimension','')
-        
-        # fill variables
-        # if masking make the array a np.ma array with the correct mask
-        DY_data[:] = [self.data[t,:,:] for t in t_use]
-        if type(self.mask)==np.ndarray:
-            DY_mask[:] = [self.mask[t,:,:] for t in t_use]
-        if save_yrpd:
-            DY_yrpd[:] = yrpd_cp
-        # lat,lon,time(time in timestamp format)
-        DY_time[:] = temp_time
-        # save a grid too
-        if type(grid) == gs.grid_set:
-            lons[:] = grid.lons.T
-            lats[:] = grid.lats.T
-        # now the extra data
-        for n,extra_d in enumerate(extra_data):
-            e_d[n] = [extra_d[0].data[t,:,:] for t in t_use]
-        
-        NC_f.close()
+            NC_f.createDimension('time', np.shape(t_use)[0])
+            NC_f.createDimension('x', self.m)
+            NC_f.createDimension('y', self.n)
+            if save_yrpd:
+                NC_f.createDimension('periods', self.periods)
+                NC_f.createDimension('nyrs', np.shape(yrpd_cp)[0])
+                # to save:
+                # A,swh,t0
+            DY_data = NC_f.createVariable(data_name, 'f4', ('time','x','y'))
+            DY_data.setncatts(data_attr)
+            if save_mask:
+                DY_mask = NC_f.createVariable('mask', 'i1', ('time','x','y'))
+                DY_mask.setncatts({'long_name':'data array binary mask',
+                                  'units':'0 - no data, 1 - data present'})
+            DY_time = NC_f.createVariable('time', 'f4', ('time',))
+            if tdim == 'days':
+                DY_time.setncatts({'Time_dimension':'Days since '+
+                                      d0.strftime('%Y-%m-%d')})
+            if tdim == 'months':
+                DY_time.setncatts({'Time_dimension':'Months since '+
+                                      d0.strftime('%Y-%m')})
+            if tdim == 'seconds':
+                DY_time.setncatts({'Time_dimension':'days since '+
+                                      d0.strftime('%Y-%m-%dT%H:%M:%S')})
+            if save_yrpd:
+                DY_yrpd = NC_f.createVariable('dy_yrpd', 'i8', ('nyrs','periods'))
+            e_d = []
+            for extra_d in extra_data:
+                if type(extra_d[0])==vec_data_year:
+                    e_d.append([NC_f.createVariable(extra_d[1]+'_x', 'f4', ('time','x','y')),
+                                NC_f.createVariable(extra_d[1]+'_y', 'f4', ('time','x','y'))])
+                    if verbos: print('Adding vector data')
+                    e_d[-1][0].setncatts(extra_d[2])
+                    e_d[-1][0].setncatts({'component':'x_component'})
+                    e_d[-1][1].setncatts(extra_d[2])
+                    e_d[-1][1].setncatts({'component':'y_component'})
+                else:
+                    e_d.append(NC_f.createVariable(extra_d[1], 'f4', ('time','x','y')))
+                    if verbos: print('Adding scalar data')
+                    e_d[-1].setncatts(extra_d[2])
+    #         DY_yrpd_mask = NC_f.createVariable('dy_yrpd_mask', 'i1', ('nyrs','periods'))
+
+            # save a grid too
+            if grid is not None:
+                if verbos: print('Adding grid points')
+                lons = NC_f.createVariable('lons', 'f4', ('x','y'))
+                lons.setncatts({'long_name':'Longitude',
+                                'units':'degrees East'})
+                lats = NC_f.createVariable('lats', 'f4', ('x','y'))
+                lats.setncatts({'long_name':'Latitude',
+                                'units':'degrees North'})
+                if grid_info:
+                    if verbos: print('Adding extended grid information')
+                    xdist = NC_f.createVariable('xdist', 'f4', ('x','y'))
+                    xdist.setncatts({'long_name':'grid cell spacing, x dimension',
+                                'units':'meters'})
+                    ydist = NC_f.createVariable('ydist', 'f4', ('x','y'))
+                    ydist.setncatts({'long_name':'grid cell spacing, y dimension',
+                                'units':'meters'})
+                    ang_c = NC_f.createVariable('ang_c', 'f4', ('x','y'))
+                    ang_c.setncatts({'long_name':'grid cell orientation, angle between y axis and north, cosine component',
+                                'units':'cos(local orientation)'})
+                    ang_s = NC_f.createVariable('ang_s', 'f4', ('x','y'))
+                    ang_s.setncatts({'long_name':'grid cell orientation, angle between y axis and north, sine component',
+                                'units':'sin(local orientation)'})
+
+            # attributes
+            for att in add_attr:
+                NC_f.setncattr_string(att[0],att[1])
+            # Time format attribute
+            if tdim == 'days':
+                NC_f.setncattr_string('Time_dimension','Days since '+
+                                      d0.strftime('%Y-%m-%d'))
+            if tdim == 'months':
+                NC_f.setncattr_string('Time_dimension','Months since '+
+                                      d0.strftime('%Y-%m'))
+            if tdim == 'seconds':
+                NC_f.setncattr_string('Time_dimension','days since '+
+                                      d0.strftime('%Y-%m-%dT%H:%M:%S'))
+
+            # fill variables
+            # if masking make the array a np.ma array with the correct mask
+            DY_data[:] = [self.data[t,:,:] for t in t_use]
+            if save_mask:
+                DY_mask[:] = [self.mask[t,:,:] for t in t_use]
+            if save_yrpd:
+                DY_yrpd[:] = yrpd_cp
+            # lat,lon,time(time in timestamp format)
+            DY_time[:] = temp_time
+            # save a grid too
+            if grid is not None:
+                lons[:] = grid.lons
+                lats[:] = grid.lats
+                if verbos: print('Adding grid information')
+                if grid_info:
+                    xdist[:] = grid.xdist
+                    ydist[:] = grid.ydist
+                    ang_c[:] = grid.ang_c
+                    ang_s[:] = grid.ang_s
+            # now the extra data
+            for n,extra_d in enumerate(extra_data):
+                if type(e_d[n]) == list:
+                    ## two vec components
+                    e_d[n][0][:] = [extra_d[0].x[t,:,:] for t in t_use]
+                    e_d[n][1][:] = [extra_d[0].y[t,:,:] for t in t_use]
+                    if verbos: print('Filling vector data')
+                else:
+                    e_d[n][:] = [extra_d[0].data[t,:,:] for t in t_use]
+                    if verbos: print('Filling scalar data')
+            NC_f.close()
         
 
             
@@ -1040,7 +1526,7 @@ class vec_data_year:
             return np.nan
 
 
-    def mean_series(self,mask = False,year_set = [],time_set = [],method='mean',mult_array=False,magnitude= False):
+    def mean_series(self,mask = False,year_set = [],time_set = [],year_select=None,method='mean',mult_array=False,magnitude= False):
         """
         Mask needs to be 1 for true 0 for false
         """
@@ -1053,7 +1539,15 @@ class vec_data_year:
             out_listy = []
             d_list = []
             dprev = self.dates[0]
-            for y in range(y0,yE+1):
+            if year_select is not None:
+                year_use = [y for y in year_select if (y>=y0 and y<=yE)]
+            else:
+                year_use = [y for y in range(y0,yE+1)]
+            if method == 'ysum':
+                ysum = len(year_select)
+            else:
+                ysum  = 1.0
+            for y in year_use:
                 for p in range(self.periods):
                     if self.yrpd.mask[y,p]:
                         out_listx.append(np.nan)
@@ -1464,12 +1958,12 @@ def get_range_mask(dy,mask,year_set,time_set):
     # build a time limit if it's wanted
     if np.size(time_set)==0:
         t0 = 0
-        tE = dy.n_t
+        tE = dy.n_t-1
     # check if months is in the correct form
     elif time_set[0]>dy.n_t:
         print("time_set inconistent with data, ignoring it")
         t0 = 0
-        tE = dy.n_t
+        tE = dy.n_t-1
     else:
         t0 = time_set[0]
         tE = np.min([dy.n_t,time_set[1]])
@@ -1519,3 +2013,4 @@ def clim_mean_combine2(dy1,dy2,op,
         print(dd1.strftime('%Y%m%d-'),dd2.strftime('%Y%m%d'))
     
     ### apply the opp and format the output like a clim_mean
+    
